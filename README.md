@@ -43,7 +43,7 @@ GitVerse служит зеркалом исходного кода; HACS уст�
 
 ```sh
 curl -fL https://raw.githubusercontent.com/Lepi4/Ya-music-HA/main/scripts/install.py -o /tmp/install-ym.py
-python3 /tmp/install-ym.py --config /config --version v0.3.0
+python3 /tmp/install-ym.py --config /config --version v0.3.1
 ha core restart
 ```
 
@@ -58,12 +58,12 @@ ha core restart
 
 ```sh
 YM_SRC=$(mktemp -d)
-git clone --depth 1 --branch v0.3.0 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
-python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.3.0/yandex_music_chaos.zip"
+git clone --depth 1 --branch v0.3.1 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
+python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.3.1/yandex_music_chaos.zip"
 ha core restart
 ```
 
-Архивы в `release/0.3.0/` содержат ту же интеграцию, что GitHub Releases.
+Архивы в `release/0.3.1/` содержат ту же интеграцию, что GitHub Releases.
 Для GitVerse используется Git: анонимное скачивание ZIP через raw API может
 ограничиваться ответом HTTP 429.
 
@@ -114,6 +114,15 @@ config/custom_components/yandex_music_chaos/
 также подкасты и выпуски; на стартовой странице поиска доступны запросы для сказок
 и аудиокниг. **Подкасты** открывает выдачу каталога Яндекса. Навыки Алисы и каталог
 Яндекс Книг не подключаются отдельными провайдерами.
+
+**Аудиокниги** — самостоятельный раздел с книгами из коллекции и каталога
+Яндекс Музыки. Отбор выполняется по типу контента `audiobook`, а не по слову
+в названии. Карточка открывает главы; Enter в поле поиска ищет книги по названию
+или автору, «Загрузить ещё» получает следующие страницы.
+
+Обзор проверенных возможностей и направлений развития API:
+[docs/api-capabilities.md](docs/api-capabilities.md),
+[полный перечень методов](docs/api-surface.json).
 
 ## Архитектура
 

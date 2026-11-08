@@ -10,7 +10,7 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.0`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.1`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
@@ -58,6 +58,7 @@ try {
     if(path.endsWith('/playlists')) return {playlists:[{uid:'1',kind:'1',title:'Playlist',count:1}]};
     if(path.endsWith('/recommendations')) return {shelves:[{title:'An arbitrary title supplied by Yandex',items:[{type:'playlist',uid:'1',kind:'2',title:'Recommended playlist',count:2},{type:'album',id:'9',title:'Recommended album'}]}]};
     if(path.endsWith('/podcasts')) return {title:'Podcast catalog title from Yandex',items:[{type:'album',id:'12',title:'Podcast show'}]};
+    if(path.includes('/audiobooks?')) return {title:'Аудиокниги',shelves:[{id:'catalog',title:'Books from API',items:[{type:'album',id:'31',media_kind:'audiobook',title:'Actual book',artist:'Book author'}]}],next_page:null};
     return {tracks:[track,{id:'2',title:'Another entry',artists:'Other artist',duration:120}]};
   });
   // Simulates the HA sidebar and a light HA theme, inside an embedded panel.
@@ -85,7 +86,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.3.0');
+  assert.equal(metrics.version,'0.3.1');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
@@ -128,6 +129,15 @@ try {
   await page.locator('[data-action="input-source"]').click();
   await page.locator('[data-input-source]').first().waitFor({timeout:60000});
   await page.keyboard.press('Escape');
+  await page.locator('[data-section="audiobooks"]').click();
+  await page.locator('#ym-content [data-album]').first().waitFor({timeout:60000});
+  const bookTitle=await page.locator('#ym-content [data-album]').first().getAttribute('data-title');
+  await page.locator('#ym-content [data-album]').first().click();
+  await page.locator('.ym-list-toolbar').waitFor({timeout:60000});
+  assert.equal(await page.locator('#ym-heading').textContent(),bookTitle);
+  assert.ok(await page.locator('.ym-track').count()>0);
+  await page.locator('[data-section="home"]').click();
+  await page.locator('#ym-recommendations h2').first().waitFor();
 
   if(!live){
     await page.locator('[data-section="search"]').click();
@@ -234,6 +244,16 @@ try {
   }
   await page.setViewportSize({width:390,height:844});
   await page.screenshot({path:fileURLToPath(new URL(`../artifacts/panel-${live?'live':'test'}-mobile.png`,import.meta.url)),fullPage:true});
+  // HA can mount custom panels inside a container without an explicit height.
+  // The panel must fill the remaining viewport instead of ending at content height.
+  await page.evaluate(()=>{
+    const parent=document.querySelector('#panel');
+    parent.style.cssText='position:relative;margin-top:42px;height:auto;';
+    dispatchEvent(new Event('resize'));
+  });
+  await page.waitForTimeout(40);
+  const naturalHeight=await page.locator('yandex-music-chaos-panel').boundingBox();
+  assert.equal(naturalHeight.y+naturalHeight.height,844);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({live,requests:calls.length,stations:shownStations,mobileSizes:4,metrics,errors}));
 } finally {await browser.close();}

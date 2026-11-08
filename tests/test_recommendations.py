@@ -27,6 +27,35 @@ def load_service():
 
 
 class RecommendationsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_likes_does_not_request_empty_track_ids(self):
+        async def executor(fn): return fn()
+        def forbidden_tracks(**kwargs): raise AssertionError("tracks([]) must never reach the API")
+        client = SimpleNamespace(users_likes_tracks=lambda **kwargs: SimpleNamespace(tracks_ids=[]), tracks=forbidden_tracks)
+        service = load_service()(SimpleNamespace(async_add_executor_job=executor), "media_player.test")
+        async def get_client(): return client
+        async def account(): return {"uid":"test"}
+        service.client = get_client
+        service.account = account
+        self.assertEqual(await service.liked_tracks(), [])
+
+    async def test_audiobooks_excludes_soundtracks_and_unrelated_podcasts(self):
+        book = SimpleNamespace(id=31,title="Book",type="audiobook",meta_type="podcast",artists=[],track_count=10)
+        soundtrack = SimpleNamespace(id=32,title="Audiobook soundtrack",type=None,meta_type="music")
+        podcast = SimpleNamespace(id=33,title="Audiobooks discussion",type="podcast",meta_type="podcast")
+        client = SimpleNamespace(
+            users_likes_albums=lambda **kwargs: [SimpleNamespace(album=book)],
+            search=lambda *args,**kwargs: SimpleNamespace(podcasts=SimpleNamespace(results=[soundtrack,podcast,book],per_page=20,total=3)),
+        )
+        async def executor(fn): return fn()
+        service = load_service()(SimpleNamespace(async_add_executor_job=executor), "media_player.test")
+        async def get_client(): return client
+        async def account(): return {"uid":"test"}
+        service.client = get_client
+        service.account = account
+        result = await service.audiobooks()
+        self.assertEqual([item["id"] for shelf in result["shelves"] for item in shelf["items"]], ["31","31"])
+        self.assertIsNone(result["next_page"])
+
     async def test_dynamic_shelves_personal_playlist_album_and_single_flight(self):
         service_type = load_service()
         calls = []

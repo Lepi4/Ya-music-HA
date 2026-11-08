@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.3.0";
+const PANEL_VERSION = "0.3.1";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -24,6 +24,7 @@ class YandexMusicChaosPanel extends HTMLElement {
 
   connectedCallback() {
     if (this._mounted) {
+      this.startLayout();
       this.startPolling();
       this.refreshPlayers();
       return;
@@ -55,6 +56,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     <button class="ym-nav" data-section="wave"><span>◉</span>Моя волна</button>
     <button class="ym-nav" data-section="chart"><span>↗</span>Чарт</button>
     <button class="ym-nav" data-section="podcasts"><span>♬</span>Подкасты</button>
+    <button class="ym-nav" data-section="audiobooks"><span>▤</span>Аудиокниги</button>
     <div id="ym-account" class="ym-account">Подключение…</div>
   </aside>
   <div class="ym-workspace">
@@ -96,7 +98,20 @@ class YandexMusicChaosPanel extends HTMLElement {
       this.querySelector("#ym-volume-value").textContent = `${Math.round(Number(event.target.value)*100)}%`;
     });
     this.startPolling();
+    this.startLayout();
     this.loadInitial();
+  }
+
+  startLayout() {
+    if (this._layoutHandler) return;
+    this._layoutHandler = () => {
+      const top = Math.max(0, this.getBoundingClientRect().top);
+      this.style.setProperty("--ym-panel-height", `${Math.max(100, innerHeight-top)}px`);
+    };
+    window.addEventListener("resize", this._layoutHandler);
+    this._layoutObserver = new ResizeObserver(this._layoutHandler);
+    if (this.parentElement) this._layoutObserver.observe(this.parentElement);
+    this._layoutFrame = requestAnimationFrame(this._layoutHandler);
   }
 
   startPolling() {
@@ -123,6 +138,10 @@ class YandexMusicChaosPanel extends HTMLElement {
     this._pollTimer = null;
     clearTimeout(this._noticeTimer);
     this.querySelectorAll("dialog").forEach(dialog => dialog.close());
+    window.removeEventListener("resize", this._layoutHandler);
+    this._layoutObserver?.disconnect();
+    cancelAnimationFrame(this._layoutFrame);
+    this._layoutHandler = null;
   }
 
   async api(path, options = {}) {
@@ -216,7 +235,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     search.value = extra.query || "";
     search.placeholder = section === "search" ? "По всей Яндекс Музыке…" : section === "home" ? "В подборках на этой странице…" : "Найти в этом разделе…";
     search.setAttribute("aria-label", section === "search" ? "Глобальный поиск в Яндекс Музыке" : "Поиск внутри текущего раздела");
-    const titles = {home:"Главная",playlists:"Плейлисты",likes:"Мне нравится",wave:"Моя волна",chart:"Чарт",podcasts:"Подкасты",search:extra.query ? `Поиск: ${extra.query}` : "Поиск"};
+    const titles = {home:"Главная",playlists:"Плейлисты",likes:"Мне нравится",wave:"Моя волна",chart:"Чарт",podcasts:"Подкасты",audiobooks:"Аудиокниги",search:extra.query ? `Поиск: ${extra.query}` : "Поиск"};
     this.querySelector("#ym-heading").textContent = titles[section] || "Загрузка…";
     if (section === "search" && !extra.query) {
       content.innerHTML = '<div class="ym-search-welcome"><span>⌕</span><h2>Поиск в Яндекс Музыке</h2><p>Найдите трек, исполнителя, альбом, плейлист, сказку или подкаст во всём каталоге.</p><div class="ym-search-suggestions"><button data-search-query="Сказки">Найти сказки</button><button data-search-query="Аудиокниги">Найти аудиокниги</button><button data-section="podcasts">Каталог подкастов</button></div></div>';
@@ -243,12 +262,16 @@ class YandexMusicChaosPanel extends HTMLElement {
       if (section === "playlist") path = `/playlists/${encodeURIComponent(extra.uid)}/${encodeURIComponent(extra.kind)}`;
       if (section === "album") path = `/albums/${encodeURIComponent(extra.id)}`;
       if (section === "search") path = `/search?q=${encodeURIComponent(extra.query || "")}`;
+      if (section === "audiobooks") path = `/audiobooks?q=${encodeURIComponent(extra.query || "")}`;
       const data = await (section === "wave" ? this.api(path) : this.catalog(path));
       if (revision !== this._sectionRevision) return;
       if (extra.title || data.title) this.querySelector("#ym-heading").textContent = extra.title || data.title;
       this._sectionData = data;
       this._sectionTitle = this.querySelector("#ym-heading").textContent;
-      if (section === "playlists" || section === "podcasts") content.innerHTML = `<div class="ym-card-grid">${(data.playlists || data.items || []).map(item => this.card(item)).join("")}</div>`;
+      if (section === "audiobooks") {
+        this._bookQuery = extra.query || "";
+        this.renderBooks(data);
+      } else if (section === "playlists" || section === "podcasts") content.innerHTML = `<div class="ym-card-grid">${(data.playlists || data.items || []).map(item => this.card(item)).join("")}</div>`;
       else if (section === "search") {
         this._tracks = [...(data.tracks || []), ...(data.podcast_episodes || [])];
         content.innerHTML = (data.tracks?.length ? this.trackRows(data.tracks) : "") + this.shelf("Плейлисты", data.playlists || []) + this.shelf("Альбомы", (data.albums || []).map(item => ({...item,type:"album"}))) + this.shelf("Подкасты", data.podcasts || []) + (data.podcast_episodes?.length ? '<div class="ym-section-head"><h2>Выпуски подкастов</h2></div>'+this.trackRows(data.podcast_episodes) : "");
@@ -270,7 +293,9 @@ class YandexMusicChaosPanel extends HTMLElement {
     };
     const content = this.querySelector("#ym-content");
     if (this._sectionData) {
-      if (this._section === "playlists" || this._section === "podcasts") {
+      if (this._section === "audiobooks") {
+        this.renderBooks({...this._sectionData, shelves:(this._sectionData.shelves || []).map(shelf => ({...shelf, items:shelf.items.filter(matches)}))});
+      } else if (this._section === "playlists" || this._section === "podcasts") {
         const items = (this._sectionData.playlists || this._sectionData.items || []).filter(matches);
         content.innerHTML = items.length ? `<div class="ym-card-grid">${items.map(item => this.card(item)).join("")}</div>` : '<p class="ym-empty">В этом разделе ничего не найдено.</p>';
       } else {
@@ -287,6 +312,28 @@ class YandexMusicChaosPanel extends HTMLElement {
       const wave = content.querySelector(".ym-wave-banner");
       if (wave) wave.hidden = !!words.length;
     }
+  }
+
+  renderBooks(data) {
+    this.querySelector("#ym-content").innerHTML = '<p class="ym-muted">Аудиокниги из каталога Яндекс Музыки. Поиск — по названию или автору; Enter ищет книги в каталоге.</p>' + (data.shelves || []).map(shelf => this.shelf(shelf.title, shelf.items)).join("") + ((data.shelves || []).some(shelf => shelf.items.length) ? "" : '<p class="ym-empty">Книг на этой странице не найдено.</p>') + (data.next_page !== null && data.next_page !== undefined ? '<button class="ym-secondary" data-action="more-books">Загрузить ещё</button>' : "");
+  }
+
+  async moreBooks() {
+    const revision = this._sectionRevision;
+    const data = this._sectionData;
+    const button = this.querySelector('[data-action="more-books"]');
+    if (!data || data.next_page == null || !button || button.disabled) return;
+    button.disabled = true;
+    try {
+      const next = await this.api(`/audiobooks?q=${encodeURIComponent(this._bookQuery || "")}&page=${data.next_page}`);
+      if (revision !== this._sectionRevision) return;
+      const current = data.shelves.find(shelf => shelf.id === "catalog");
+      const ids = new Set(current.items.map(item => item.id));
+      for (const item of next.shelves.find(shelf => shelf.id === "catalog")?.items || []) if (!ids.has(item.id)) { current.items.push(item); ids.add(item.id); }
+      data.next_page = next.next_page;
+      this.filterSection(this.querySelector("#ym-search").value);
+    } catch (error) { if (revision === this._sectionRevision) this.showError(error); }
+    finally { if (button.isConnected) button.disabled = false; }
   }
 
   shelf(title, items) {
@@ -512,6 +559,7 @@ class YandexMusicChaosPanel extends HTMLElement {
 
   async search() {
     const query = this.querySelector("#ym-search").value.trim();
+    if (this._section === "audiobooks") { await this.loadSection("audiobooks", {query}); return; }
     if (this._section !== "search") { this.filterSection(query); return; }
     await this.loadSection("search", {query});
   }
@@ -551,6 +599,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     if (action === "apply-sources") this.applySources();
     if (action === "send-current") this.applySources(true);
     if (action === "queue") this.openQueue();
+    if (action === "more-books") this.moreBooks();
     if (action === "close-dialog") event.target.closest("dialog").close();
     if (action === "search") this.search();
     if (action === "play-all") this.playTracks(this._tracks, 0).catch(() => {});
@@ -560,7 +609,7 @@ class YandexMusicChaosPanel extends HTMLElement {
 
 const CSS = `
 .ym-workspace{overflow-y:auto!important;overflow-x:hidden;display:block!important;scrollbar-gutter:stable;overscroll-behavior-y:auto}.ym-main{overflow:visible!important;min-height:320px;overscroll-behavior:auto!important}.ym-player-area{position:sticky;top:0;z-index:5}.ym-card-row,.ym-stations{overflow-x:auto!important;overflow-y:hidden!important;overscroll-behavior-x:contain}.ym-input-source-button{width:100%;min-height:58px;display:flex;align-items:center;gap:12px;padding:10px 16px;border:1px solid #03a9f480;border-radius:9px;background:#03a9f418;text-align:left;color:#eee}.ym-input-source-button>span:nth-child(2){min-width:0;flex:1}.ym-input-source-button small{display:block;color:#a6cfe3;font-size:11px}.ym-input-source-button strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}.ym-input-source-icon{font-size:30px;color:#29b6f6}.ym-input-source-change{font-size:13px;color:#29b6f6}.ym-input-source-option{display:flex;align-items:center;gap:12px;border:1px solid #444;border-radius:8px;background:transparent;width:100%;min-height:58px;padding:12px;margin:8px 0;text-align:left;overflow-wrap:anywhere}.ym-input-source-option>span:nth-child(2){flex:1;min-width:0}.ym-input-source-option.active{border-color:#03a9f4;background:#03a9f418;color:#29b6f6}.ym-search-welcome{padding:36px 12px;text-align:center;color:#aaa}.ym-search-welcome>span{display:block;font-size:64px;color:#29b6f6}.ym-search-welcome h2{margin:10px 0;color:#eee}.ym-search-welcome p{max-width:400px;margin:0 auto}.ym-search-suggestions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:22px}.ym-search-suggestions button{min-height:44px;border:1px solid #555;border-radius:24px;padding:8px 16px;background:#292929}
-:host{display:block;height:100%;min-height:0;overflow:hidden;color:#eee;color-scheme:dark;font:14px/1.45 Roboto,Arial,sans-serif;background:#181818;--ym-primary:#03a9f4}
+:host{display:block;width:100%;max-width:100%;min-width:0;height:var(--ym-panel-height,100dvh);min-height:0;overflow:hidden;color:#eee;color-scheme:dark;font:14px/1.45 Roboto,Arial,sans-serif;background:#181818;--ym-primary:#03a9f4}
 *{box-sizing:border-box}button,input{font:inherit}button{cursor:pointer;color:inherit;touch-action:manipulation}button:disabled{cursor:default;opacity:.4}button:focus-visible,input:focus-visible{outline:2px solid var(--ym-primary);outline-offset:3px}h1,h2,p{margin:0}h1{font-size:26px;font-weight:600}h2{font-size:19px;font-weight:600}strong{font-weight:500}input[type=range]{accent-color:var(--ym-primary);min-height:44px;cursor:pointer;touch-action:pan-y}input[type=checkbox]{accent-color:var(--ym-primary);width:21px;height:21px;flex:none}.hidden,[hidden]{display:none!important}.ym-muted{color:#a6a6a6}
 .ym-shell{height:100%;display:grid;grid-template-columns:216px minmax(0,1fr);background:#181818}.ym-sidebar{display:flex;flex-direction:column;padding:24px 12px;overflow:auto;background:#232323;border-right:1px solid #333}.ym-brand{display:flex;align-items:center;gap:10px;padding:0 8px 24px;font-size:17px;font-weight:600}.ym-brand-mark{width:34px;height:34px;background:var(--ym-primary);color:#fff;border-radius:50%;display:grid;place-items:center;font-size:24px;flex:none}.ym-version{display:block;font-size:10px;color:#999;font-weight:400}.ym-nav-caption{padding:20px 14px 8px;color:#a0a0a0;font-size:12px}.ym-nav{display:flex;align-items:center;gap:14px;border:0;border-radius:7px;min-height:48px;padding:10px 14px;text-align:left;background:transparent;color:#ddd}.ym-nav>span{width:24px;font-size:24px;text-align:center}.ym-nav:hover{background:#303030}.ym-nav.active{background:#03a9f420;color:#29b6f6}.ym-account{margin-top:auto;padding:24px 14px 0;font-size:12px;color:#999;overflow-wrap:anywhere}
 .ym-workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-width:0;min-height:0}.ym-player-area{padding:16px 24px 0;background:#202020;border-bottom:1px solid #363636;min-width:0;max-height:52vh;overflow:auto}.ym-stations-heading{display:flex;align-items:center;gap:16px;margin-bottom:10px}.ym-stations-heading h2{font-size:15px}.ym-stations-heading>span{font-size:12px;color:#999}.ym-stations{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 8px;scrollbar-width:thin;scroll-snap-type:x proximity}.ym-station{display:flex;align-items:center;gap:10px;flex:1 0 180px;max-width:330px;min-width:0;min-height:64px;border:1px solid #404040;border-radius:9px;background:#292929;padding:10px 12px;text-align:left;scroll-snap-align:start}.ym-station.selected{border-color:var(--ym-primary);background:#03a9f412}.ym-speaker-icon{font-size:27px;color:#aaa}.ym-station.selected .ym-speaker-icon,.ym-selected-mark{color:var(--ym-primary)}.ym-station-copy{flex:1;min-width:0}.ym-station-copy strong,.ym-station-copy small{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ym-station-copy small{font-size:11px;color:#aaa;margin-top:4px}.ym-station-copy i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#777;margin-right:5px}.ym-station.playing .ym-station-copy i{background:#4caf50}.ym-station.playing{box-shadow:inset 0 3px #4caf50}

@@ -318,6 +318,20 @@ class AlbumView(_BaseView):
             return self.error(err)
 
 
+class AudiobooksView(_BaseView):
+    url = f"{API_PREFIX}/audiobooks"
+    name = f"api:{DOMAIN}:audiobooks"
+
+    async def get(self, request: web.Request):
+        try:
+            page = max(0, min(500, int(request.query.get("page", 0))))
+            return _json(await self.service(request).audiobooks(request.query.get("q", ""), page))
+        except ValueError:
+            return _json({"error": "Некорректный номер страницы"}, 400)
+        except Exception as err:
+            return self.error(err)
+
+
 class PlayView(_BaseView):
     url = f"{API_PREFIX}/play"
     name = f"api:{DOMAIN}:play"
@@ -438,6 +452,7 @@ def register_views(hass: HomeAssistant, service: YandexMusicService) -> None:
         RecommendationsView,
         PodcastsView,
         AlbumView,
+        AudiobooksView,
         PlayView,
         CommandView,
         LikeView,

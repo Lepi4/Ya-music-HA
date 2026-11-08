@@ -185,6 +185,18 @@ def normalize_playlist(playlist: Any, uid: str) -> dict[str, Any]:
     }
 
 
+def is_audiobook(album: Any) -> bool:
+    """A book can have meta_type=podcast; the specific audiobook type wins."""
+    return any("audiobook" in str(getattr(album, field, "") or "").lower()
+               for field in ("type", "meta_type"))
+
+
+def normalize_book(album: Any) -> dict[str, Any]:
+    return {"id": str(album.id), "type": "album", "media_kind": "audiobook",
+            "title": str(album.title), "artist": _artists(album), "cover": _cover(album),
+            "count": int(getattr(album, "track_count", 0) or 0)}
+
+
 @dataclass
 class PlaybackState:
     queue: list[dict[str, Any]]
@@ -285,6 +297,7 @@ class YandexMusicService:
         album = await self.hass.async_add_executor_job(lambda: client.albums_with_tracks(album_id))
         return {
             "title": getattr(album, "title", "Альбом"),
+            "media_kind": "audiobook" if is_audiobook(album) else "album",
             "tracks": [track for volume in (getattr(album, "volumes", None) or [])
                        for row in volume if (track := normalize_track(row))],
         }
@@ -308,6 +321,8 @@ class YandexMusicService:
             lambda: client.users_likes_tracks(user_id=account["uid"])
         )
         ids = list(getattr(likes, "tracks_ids", []) or [])
+        if not ids:
+            return []
         tracks = await self.hass.async_add_executor_job(
             lambda: client.tracks(track_ids=ids[:500])
         )
@@ -357,6 +372,38 @@ class YandexMusicService:
             "items": [{"type": "album", "id": str(row.id), "title": row.title,
                        "artist": _artists(row), "cover": _cover(row)} for row in albums or []],
         }
+
+    async def audiobooks(self, query: str = "", page: int = 0) -> dict[str, Any]:
+        client = await self.client()
+        account = await self.account()
+        query = query.strip()[:200]
+        def fetch():
+            shelves = []
+            if page == 0 and not query:
+                likes = client.users_likes_albums(user_id=account["uid"], rich=True) or []
+                books = [normalize_book(album) for row in likes
+                         if (album := getattr(row, "album", None)) and is_audiobook(album)]
+                if books:
+                    shelves.append({"id": "library", "title": "Ваши аудиокниги", "items": books})
+            items, seen, next_page, has_more = [], set(), page, False
+            # Books share the podcast search endpoint. Filter by content type,
+            # never by a title containing "audiobook" (which includes soundtracks).
+            for current in range(page, page + 3):
+                result = client.search(query or "Аудиокниги", type_="podcast", page=current)
+                block = getattr(result, "podcasts", None)
+                rows = getattr(block, "results", None) or []
+                for album in rows:
+                    if is_audiobook(album) and str(album.id) not in seen:
+                        seen.add(str(album.id))
+                        items.append(normalize_book(album))
+                next_page = current + 1
+                has_more = bool(rows) and next_page * int(getattr(block, "per_page", 20) or 20) < int(getattr(block, "total", 0) or 0)
+                if not has_more:
+                    break
+            shelves.append({"id": "catalog", "title": "Результаты поиска" if query else "Аудиокниги Яндекс Музыки", "items": items})
+            return {"title": "Аудиокниги", "shelves": shelves, "query": query,
+                    "next_page": next_page if has_more else None}
+        return await self.hass.async_add_executor_job(fetch)
 
     async def wave(self, station: str = "user:onyourwave", queue: str | None = None) -> list[dict[str, Any]]:
         client = await self.client()
