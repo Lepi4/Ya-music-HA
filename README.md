@@ -57,12 +57,15 @@ ha core restart
 Если GitHub недоступен, установщик и архив можно получить из GitVerse:
 
 ```sh
-curl -fL https://gitverse.ru/api/repos/Lepi4/Ya-music-HA/raw/branch/main/scripts/install.py -o /tmp/install-ym.py
-python3 /tmp/install-ym.py --config /config --archive-url https://gitverse.ru/api/repos/Lepi4/Ya-music-HA/raw/branch/main/release/0.3.0/yandex_music_chaos.zip
+YM_SRC=$(mktemp -d)
+git clone --depth 1 --branch v0.3.0 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
+python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.3.0/yandex_music_chaos.zip"
 ha core restart
 ```
 
 Архивы в `release/0.3.0/` содержат ту же интеграцию, что GitHub Releases.
+Для GitVerse используется Git: анонимное скачивание ZIP через raw API может
+ограничиваться ответом HTTP 429.
 
 Скопируйте каталог `custom_components/yandex_music_chaos` в каталог конфигурации
 Home Assistant:

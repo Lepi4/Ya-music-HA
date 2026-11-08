@@ -87,9 +87,9 @@ try {
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
   assert.equal(metrics.version,'0.3.0');
   // Wheel events must scroll the actual workspace, including over its sticky player.
-  for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar']) {
+  for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
-    const bounds=await page.locator(surface).boundingBox();
+    const bounds=await page.locator(surface).first().boundingBox();
     await page.mouse.move(bounds.x+40,Math.min(bounds.y+30,850));
     await page.mouse.wheel(0,450);
     await page.waitForTimeout(100);
