@@ -1,4 +1,4 @@
-Required Notice: Copyright 2026 Lepi4 (https://github.com/Lepi4/ha-yandex-music)
+Required Notice: Copyright 2026 Lepi4 (https://github.com/Lepi4/Ya-music-HA)
 
 # PolyForm Noncommercial License 1.0.0
 

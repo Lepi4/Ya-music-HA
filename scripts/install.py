@@ -16,7 +16,7 @@ args = parser.parse_args()
 config = Path(args.config).expanduser().resolve(strict=True)
 if not (config / "configuration.yaml").is_file():
     parser.error("The selected directory does not contain configuration.yaml")
-url = args.archive_url or f"https://github.com/Lepi4/ha-yandex-music/releases/download/{args.version}/yandex_music_chaos.zip"
+url = args.archive_url or f"https://github.com/Lepi4/Ya-music-HA/releases/download/{args.version}/yandex_music_chaos.zip"
 request = urllib.request.Request(url, headers={"User-Agent": "ha-yandex-music-installer"})
 with urllib.request.urlopen(request, timeout=60) as response:
     payload = response.read(20 * 1024 * 1024 + 1)

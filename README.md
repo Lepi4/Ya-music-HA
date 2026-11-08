@@ -1,8 +1,8 @@
 # ЯМ-ХАОС — Yandex Music для Home Assistant
 
-[GitHub](https://github.com/Lepi4/ha-yandex-music) ·
-[GitVerse](https://gitverse.ru/Lepi4/ha-yandex-music) ·
-[Релизы](https://github.com/Lepi4/ha-yandex-music/releases)
+[GitHub](https://github.com/Lepi4/Ya-music-HA) ·
+[GitVerse](https://gitverse.ru/Lepi4/Ya-music-HA) ·
+[Релизы](https://github.com/Lepi4/Ya-music-HA/releases)
 
 Экспериментальная интеграция. Проверена на Home Assistant 2026.11.0.
 
@@ -30,7 +30,7 @@ Yandex Station.
 
 1. Установите и настройте [AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation).
 2. В HACS откройте меню → **Пользовательские репозитории**.
-3. Добавьте `https://github.com/Lepi4/ha-yandex-music`, тип **Интеграция**.
+3. Добавьте `https://github.com/Lepi4/Ya-music-HA`, тип **Интеграция**.
 4. Найдите **ЯМ-ХАОС**, скачайте и перезапустите Home Assistant.
 5. Добавьте интеграцию **ЯМ-ХАОС** в **Настройки → Устройства и службы**.
 6. Выберите колонку, из которой нужно получить существующий музыкальный токен.
@@ -42,7 +42,7 @@ GitVerse служит зеркалом исходного кода; HACS уст�
 В терминале Home Assistant (Advanced SSH & Web Terminal) скачайте установщик:
 
 ```sh
-curl -fL https://raw.githubusercontent.com/Lepi4/ha-yandex-music/main/scripts/install.py -o /tmp/install-ym.py
+curl -fL https://raw.githubusercontent.com/Lepi4/Ya-music-HA/main/scripts/install.py -o /tmp/install-ym.py
 python3 /tmp/install-ym.py --config /config --version v0.3.0
 ha core restart
 ```
