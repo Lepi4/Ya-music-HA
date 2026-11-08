@@ -1,0 +1,12 @@
+{
+  "domain": "yandex_music_chaos",
+  "name": "ЯМ-ХАОС",
+  "version": "0.3.0",
+  "documentation": "https://github.com/Lepi4/ha-yandex-music",
+  "issue_tracker": "https://github.com/Lepi4/ha-yandex-music/issues",
+  "codeowners": ["@Lepi4"],
+  "config_flow": true,
+  "dependencies": ["frontend", "http"],
+  "requirements": ["yandex-music==3.2.0"],
+  "iot_class": "cloud_polling"
+}
