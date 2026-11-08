@@ -54,6 +54,16 @@ ha core restart
 
 ### Вручную или из GitVerse
 
+Если GitHub недоступен, установщик и архив можно получить из GitVerse:
+
+```sh
+curl -fL https://gitverse.ru/api/repos/Lepi4/Ya-music-HA/raw/branch/main/scripts/install.py -o /tmp/install-ym.py
+python3 /tmp/install-ym.py --config /config --archive-url https://gitverse.ru/api/repos/Lepi4/Ya-music-HA/raw/branch/main/release/0.3.0/yandex_music_chaos.zip
+ha core restart
+```
+
+Архивы в `release/0.3.0/` содержат ту же интеграцию, что GitHub Releases.
+
 Скопируйте каталог `custom_components/yandex_music_chaos` в каталог конфигурации
 Home Assistant:
 
