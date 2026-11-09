@@ -24,7 +24,8 @@ Yandex Station.
   через Home Assistant `media_player.play_media`: колонка получает поток Яндекса;
 - мобильная вёрстка, крупные кнопки и отдельный выбор получателей.
 - непрерывная «Моя волна» с отдельными очередями колонок, настроением из API
-  и кнопкой «Волна по текущему треку» в плеере.
+  и кнопками «Волна по текущему треку» и «Волна по жанру» в плеере;
+- каталог Rotor Session станций по настроению, занятию, жанру, эпохе и языку.
 
 ## Установка
 
@@ -45,12 +46,13 @@ GitVerse служит зеркалом исходного кода; HACS уст�
 
 ```sh
 curl -fL https://raw.githubusercontent.com/Lepi4/Ya-music-HA/main/scripts/install.py -o /tmp/install-ym.py
-python3 /tmp/install-ym.py --config /config --version v0.3.2
+python3 /tmp/install-ym.py --config /config --version v0.3.3
 ha core restart
 ```
 
 Установщик загружает архив релиза, проверяет его структуру и сохраняет предыдущий
-каталог интеграции рядом в скрытой папке `.yandex_music_chaos-backup-*`.
+каталог интеграции в `/config/backup/yandex_music_chaos/`. Резервная копия
+вынесена из `custom_components`, чтобы Home Assistant не считал её интеграцией.
 Файлы `configuration.yaml`, `.storage`, токены и другие интеграции не заменяются.
 Если конфигурация расположена иначе, явно укажите её каталог в `--config`.
 
@@ -60,12 +62,12 @@ ha core restart
 
 ```sh
 YM_SRC=$(mktemp -d)
-git clone --depth 1 --branch v0.3.2 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
-python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.3.2/yandex_music_chaos.zip"
+git clone --depth 1 --branch v0.3.3 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
+python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.3.3/yandex_music_chaos.zip"
 ha core restart
 ```
 
-Архивы в `release/0.3.2/` содержат ту же интеграцию, что GitHub Releases.
+Архивы в `release/0.3.3/` содержат ту же интеграцию, что GitHub Releases.
 Для GitVerse используется Git: анонимное скачивание ZIP через raw API может
 ограничиваться ответом HTTP 429.
 

@@ -1,6 +1,8 @@
 # Обзор Yandex Music API
 
-Дополнение 2026-11-09 / 0.3.2: подключены `rotor_station_info`,
+Дополнение 2026-11-09 / 0.3.3: подключены `rotor_session_new`,
+`rotor_session_tracks`, `rotor_session_feedback`, каталог станций и seeds
+текущего трека. Дополнение 0.3.2 подключало `rotor_station_info`,
 `rotor_station_settings2`, `rotor_station_feedback` и продолжение
 `rotor_station_tracks(queue=...)`. Настроения берутся из `restrictions2`,
 волна по текущему треку использует `track:<id>`. Отдельные сеансы колонок

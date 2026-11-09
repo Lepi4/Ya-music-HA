@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.3.2";
+const PANEL_VERSION = "0.3.3";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -70,8 +70,9 @@ class YandexMusicChaosPanel extends HTMLElement {
       <section class="ym-player" aria-label="Управление выбранной колонкой">
         <div class="ym-now"><div class="ym-artwork"><span>♫</span><img id="ym-cover" alt="" hidden></div><div class="ym-now-copy"><span id="ym-player-name" class="ym-player-name">Выберите колонку</span><strong id="ym-now-title">Ничего не играет</strong><span id="ym-now-artist" class="ym-muted">Выберите музыку в библиотеке</span></div></div>
         <div class="ym-transport"><div class="ym-controls"><button data-cmd="previous" aria-label="Предыдущий трек">⏮</button><button class="ym-play" data-cmd="toggle" aria-label="Воспроизвести">▶</button><button data-cmd="next" aria-label="Следующий трек">⏭</button><button data-cmd="stop" aria-label="Остановить">■</button></div><div class="ym-timeline"><span id="ym-position">0:00</span><input id="ym-seek" type="range" min="0" max="1" value="0" step="1" aria-label="Позиция трека" disabled><span id="ym-duration">0:00</span></div></div>
-        <div class="ym-player-actions"><button class="ym-action" data-action="sources" aria-haspopup="dialog">▣ <span>Куда воспроизводить<small id="ym-target-label">Выберите колонку</small></span></button><button class="ym-icon-button" data-action="queue" aria-label="Открыть очередь" title="Очередь">☷</button><button class="ym-icon-button" data-action="track-wave" aria-label="Волна по текущему треку" title="Волна по текущему треку">◉</button></div>
+        <div class="ym-player-actions"><button class="ym-action" data-action="sources" aria-haspopup="dialog">▣ <span>Куда воспроизводить<small id="ym-target-label">Выберите колонку</small></span></button><button class="ym-icon-button" data-action="queue" aria-label="Открыть очередь" title="Очередь">☷</button></div>
         <div class="ym-volume"><button class="ym-icon-button" data-cmd="mute" aria-label="Выключить звук">♪</button><input id="ym-volume" type="range" min="0" max="1" step="0.01" value="0" aria-label="Громкость выбранной колонки" disabled><output id="ym-volume-value">—</output></div>
+        <div class="ym-wave-actions"><button class="ym-action ym-wave-action" data-action="track-wave" aria-label="Волна по текущему треку" title="Волна по текущему треку">◉ <span>Волна по треку</span></button><button class="ym-action ym-wave-action" data-action="genre-wave" aria-label="Волна по жанру текущего трека" title="Волна по жанру текущего трека">♫ <span>Волна по жанру</span></button></div>
         <p id="ym-radio-status" class="ym-radio-status" role="status" hidden></p>
       </section>
     </section>
@@ -294,8 +295,9 @@ class YandexMusicChaosPanel extends HTMLElement {
       this._sectionTitle = this.querySelector("#ym-heading").textContent;
       if (section === "wave") {
         this._tracks = data.tracks || [];
-        content.innerHTML = '<div class="ym-wave-banner"><div><h2>Бесконечная волна</h2><p>Отдельный поток на выбранной колонке. Следующие треки подгружает Home Assistant.</p></div><button class="ym-primary" data-action="start-wave">▶ Слушать</button></div><div class="ym-wave-settings"><label for="ym-wave-mood">Настроение</label><select id="ym-wave-mood" disabled><option value="">Загрузка…</option></select><button class="ym-secondary" data-action="mood-wave" disabled>Применить и слушать</button><p class="ym-muted">Настроение сохраняется в музыкальном аккаунте и может влиять на его волну на других устройствах.</p><p id="ym-wave-settings-error" class="ym-muted"></p></div><div class="ym-section-head"><h2>Фрагмент рекомендаций</h2></div><p class="ym-muted">Это первый пакет API, а не полная очередь потока. Для непрерывного воспроизведения нажмите «Слушать».</p>'+this.trackRows(this._tracks);
+        content.innerHTML = '<div class="ym-wave-banner"><div><h2>Бесконечная волна</h2><p>Rotor Session подбирает музыку партиями и продолжает поток на выбранной колонке.</p></div><button class="ym-primary" data-action="start-wave">▶ Слушать</button></div><div class="ym-wave-settings"><label for="ym-wave-mood">Настроение</label><select id="ym-wave-mood" disabled><option value="">Загрузка…</option></select><button class="ym-secondary" data-action="mood-wave" disabled>Применить и слушать</button><p class="ym-muted">Настроение сохраняется в музыкальном аккаунте и может влиять на его волну на других устройствах.</p><p id="ym-wave-settings-error" class="ym-muted"></p></div><div id="ym-wave-stations"><div class="ym-loading">Загружаем волны по настроению, занятию и жанрам…</div></div><div class="ym-section-head"><h2>Фрагмент рекомендаций</h2></div><p class="ym-muted">Это первый пакет API, а не полная очередь потока.</p>'+this.trackRows(this._tracks);
         this.loadWaveSettings(revision);
+        this.loadWaveStations(revision);
       } else if (section === "audiobooks") {
         this._bookQuery = extra.query || "";
         this.renderBooks(data);
@@ -469,7 +471,9 @@ class YandexMusicChaosPanel extends HTMLElement {
     this.querySelector("#ym-duration").textContent = formatTime(player?.duration);
     this.querySelector("#ym-target-label").textContent = this._targets.map(id => this.stations().find(p => p.entity_id === id)?.name).filter(Boolean).join(", ") || "Выберите колонку";
     this.querySelector('[data-action="sources"]').disabled = disabled;
-    this.querySelector('[data-action="track-wave"]').disabled = disabled || !/^(?:\d+)(?::\d+)?$|\/track\/\d+/.test(String(player?.media_id || "")) || this._radioBusy;
+    const hasTrackId = /^(?:\d+)(?::\d+)?$|\/track\/\d+/.test(String(player?.media_id || ""));
+    this.querySelector('[data-action="track-wave"]').disabled = disabled || !hasTrackId || this._radioBusy;
+    this.querySelector('[data-action="genre-wave"]').disabled = disabled || !hasTrackId || this._radioBusy;
     const radio = this._radioSessions[player?.entity_id];
     const radioStatus = this.querySelector("#ym-radio-status");
     radioStatus.hidden = !radio;
@@ -651,15 +655,36 @@ class YandexMusicChaosPanel extends HTMLElement {
     }
   }
 
-  async startWave(byCurrent = false, mood) {
+  async loadWaveStations(revision) {
+    try {
+      const data = await this.api("/wave/stations");
+      if (revision !== this._sectionRevision) return;
+      const groups = new Map();
+      for (const station of data.stations || []) {
+        const key = station.category || "other";
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(station);
+      }
+      const labels = {user:"Для вас",personal:"Персональные",mood:"Под настроение",activity:"Занятия",genre:"Жанры",era:"Эпохи",language:"Язык",local:"Региональные",tempo:"Темп",mix:"Миксы",editorial:"Подборки",author:"Исполнители",other:"Другие волны"};
+      const order = ["user","personal","mood","activity","genre","era","language","local","tempo","mix","editorial","author","other"];
+      const html = [...groups].sort(([a],[b]) => (order.indexOf(a)<0?99:order.indexOf(a))-(order.indexOf(b)<0?99:order.indexOf(b))).map(([key, stations], groupIndex) => `<details class="ym-wave-station-group" ${groupIndex < 4 ? "open" : ""}><summary>${escapeHtml(labels[key] || "Другие волны")} <small>${stations.length}</small></summary><div class="ym-wave-station-row">${stations.slice(0,30).map(station => `<button class="ym-wave-station" data-wave-seed="${escapeHtml(station.seed)}" title="${escapeHtml(station.title)}"><span>${station.cover ? `<img src="${escapeHtml(station.cover)}" alt="" loading="lazy">` : "◉"}</span><strong>${escapeHtml(station.title)}</strong></button>`).join("")}</div>${stations.length > 30 ? `<p class="ym-muted ym-wave-group-note">Показаны первые 30 из ${stations.length}. Остальные доступны в каталоге Яндекса.</p>` : ""}</details>`).join("");
+      this.querySelector("#ym-wave-stations").innerHTML = html || '<p class="ym-empty">Яндекс не вернул тематические волны для этого аккаунта.</p>';
+    } catch (error) {
+      if (revision === this._sectionRevision) this.querySelector("#ym-wave-stations").innerHTML = '<p class="ym-muted">Каталог тематических волн временно недоступен. Общую волну можно запустить кнопкой «Слушать».</p>';
+    }
+  }
+
+  async startWave(byCurrent = false, mood, mode = "", seed = "") {
     const id = this._selectedPlayerId;
     if (!id || this._radioBusy) return;
     this._radioBusy = true;
     this.clearError();
-    this.querySelectorAll('[data-action="start-wave"], [data-action="track-wave"], [data-action="mood-wave"]').forEach(b => { b.disabled = true; });
+    this.querySelectorAll('[data-action="start-wave"], [data-action="track-wave"], [data-action="genre-wave"], [data-action="mood-wave"]').forEach(b => { b.disabled = true; });
     try {
       const body = {entity_id:id, by_current:byCurrent};
       if (mood !== undefined) body.mood_energy = mood;
+      if (mode) body.mode = mode;
+      if (seed) body.seed = seed;
       const revision = this._radioRevision = (this._radioRevision || 0)+1;
       const data = await this.api("/radio", {method:"POST", body});
       if (revision === this._radioRevision) this._radioSessions = data.radio || {};
@@ -671,7 +696,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     } catch (error) { this.showError(error); }
     finally {
       this._radioBusy = false;
-      this.querySelectorAll('[data-action="start-wave"], [data-action="mood-wave"]').forEach(b => { b.disabled = b.dataset.action === "mood-wave" && !!this.querySelector("#ym-wave-mood")?.disabled; });
+      this.querySelectorAll('[data-action="start-wave"], [data-action="track-wave"], [data-action="genre-wave"], [data-action="mood-wave"]').forEach(b => { b.disabled = b.dataset.action === "mood-wave" && !!this.querySelector("#ym-wave-mood")?.disabled; });
       this.updateNowPlaying();
     }
   }
@@ -691,6 +716,8 @@ class YandexMusicChaosPanel extends HTMLElement {
   onClick(event) {
     const suggested = event.target.closest("[data-search-query]");
     if (suggested) { this.loadSection("search", {query:suggested.dataset.searchQuery}); return; }
+    const waveSeed = event.target.closest("[data-wave-seed]");
+    if (waveSeed) { this.startWave(false, undefined, "seed", waveSeed.dataset.waveSeed); return; }
     const station = event.target.closest("[data-station]");
     if (station) { this.selectStation(station.dataset.station); return; }
     const inputSource = event.target.closest("[data-input-source]");
@@ -729,7 +756,8 @@ class YandexMusicChaosPanel extends HTMLElement {
     if (action === "search") this.search();
     if (action === "play-all") this.playTracks(this._tracks, 0).catch(() => {});
     if (action === "start-wave") this.startWave();
-    if (action === "track-wave") this.startWave(true);
+    if (action === "track-wave") this.startWave(true, undefined, "track");
+    if (action === "genre-wave") this.startWave(true, undefined, "genre");
     if (action === "mood-wave") this.startWave(false, this.querySelector("#ym-wave-mood").value);
   }
 }
@@ -758,6 +786,9 @@ const CSS = `
 #ym-volume::-moz-range-thumb{width:20px;height:20px;background:var(--ym-primary);border:2px solid #202020;border-radius:50%}
 .ym-wave-settings{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px}.ym-wave-settings p{flex-basis:100%;font-size:12px}.ym-wave-settings select{min-height:44px;min-width:140px;max-width:100%;font:inherit;border:1px solid #555;border-radius:8px;background:#292929;color:#eee;padding:8px}
 .ym-radio-status{grid-column:1/-1;color:#aaa;font-size:12px;padding:4px 0}
+.ym-wave-actions{grid-column:1/-1;display:flex;align-items:center;gap:8px;border-top:1px solid #ffffff09;padding-top:6px}.ym-wave-actions .ym-action{border:1px solid #3d3d3d;background:#292929;min-height:42px;padding:6px 12px}.ym-wave-actions .ym-action:hover{border-color:var(--ym-primary);background:#03a9f412}
+.ym-wave-station-group{margin:22px 0}.ym-wave-station-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}.ym-wave-station{display:flex;flex-direction:column;align-items:stretch;min-width:0;border:1px solid #3d3d3d;border-radius:9px;background:#292929;text-align:left;padding:0;overflow:hidden;min-height:190px}.ym-wave-station:hover,.ym-wave-station:focus-visible{border-color:var(--ym-primary);background:#03a9f412}.ym-wave-station-art{display:grid;place-items:center;aspect-ratio:1;background:linear-gradient(135deg,#315975,#364053);color:#a5c7df;font-size:42px;overflow:hidden}.ym-wave-station-art img{width:100%;height:100%;object-fit:cover}.ym-wave-station strong{padding:9px 10px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ym-wave-station small{padding:3px 10px 10px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ym-wave-station-group{margin:12px 0;border:1px solid #343434;border-radius:9px;background:#202020;overflow:hidden}.ym-wave-station-group summary{cursor:pointer;list-style:none;padding:12px 14px;color:#eee;font-weight:600}.ym-wave-station-group summary::-webkit-details-marker{display:none}.ym-wave-station-group summary::before{content:"▸";display:inline-block;width:20px;color:#29b6f6}.ym-wave-station-group[open] summary::before{content:"▾"}.ym-wave-station-group summary small{color:#999;font-weight:400;margin-left:6px}.ym-wave-station-row{display:flex;gap:8px;overflow-x:auto;padding:0 12px 12px;scrollbar-width:thin}.ym-wave-station-row .ym-wave-station{display:grid;grid-template-columns:34px minmax(0,1fr);grid-template-rows:auto;align-items:center;gap:8px;flex:0 0 178px;min-height:54px;border:1px solid #3d3d3d;border-radius:8px;background:#292929;text-align:left;padding:7px;overflow:hidden}.ym-wave-station-row .ym-wave-station:hover,.ym-wave-station-row .ym-wave-station:focus-visible{border-color:var(--ym-primary);background:#03a9f412}.ym-wave-station-row .ym-wave-station>span{width:34px;height:34px;display:grid;place-items:center;border-radius:5px;background:linear-gradient(135deg,#315975,#364053);color:#a5c7df;font-size:20px;overflow:hidden}.ym-wave-station-row .ym-wave-station img{width:100%;height:100%;object-fit:cover}.ym-wave-station-row .ym-wave-station strong{padding:0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}.ym-wave-group-note{padding:0 14px 12px;font-size:11px}.ym-wave-action{white-space:nowrap}.ym-wave-action>span{max-width:120px}
 @media(min-width:801px) and (max-width:1100px){.ym-volume{grid-column:1/-1;grid-row:3}}
 @media(max-width:800px){
   .ym-player-area{position:relative;max-height:none;overflow:visible}
@@ -780,6 +811,8 @@ const CSS = `
   .ym-input-source-button{min-height:48px}
   .ym-wave-banner{flex-wrap:wrap}
   .ym-wave-settings{align-items:stretch}
+  .ym-wave-action>span{display:none}.ym-wave-action{padding:4px;min-width:44px}.ym-wave-station-row .ym-wave-station{flex-basis:150px}
+  .ym-wave-actions{grid-column:1;grid-row:5;justify-content:flex-start}.ym-player-actions{grid-row:6}
 }
 `;
 

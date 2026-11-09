@@ -49,6 +49,7 @@ class RadioSession:
     error: str | None = None
     feedback_error: str | None = None
     requested_at: float = 0
+    session_id: str | None = None
 
     @property
     def current(self) -> dict | None:
@@ -67,7 +68,8 @@ class RadioController:
         return self._locks.setdefault(entity_id, asyncio.Lock())
 
     def snapshot(self) -> dict:
-        return {key: {"station": s.station, "tracks": [{k: v for k, v in t.items() if k != "_batch"} for t in s.tracks],
+        return {key: {"station": s.station, "seed": s.station, "session_id": s.session_id,
+                      "tracks": [{k: v for k, v in t.items() if k != "_batch"} for t in s.tracks],
                       "index": s.index, "active": s.active, "waiting": s.waiting,
                       "error": s.error, "feedback_error": s.feedback_error}
                 for key, s in self.sessions.items()}
@@ -75,8 +77,12 @@ class RadioController:
     async def feedback(self, s, kind, seconds=0):
         current = s.current
         try:
-            await self.service.wave_feedback(s.station, kind, current.get("id") if current else None,
-                                             current.get("_batch") if current else s.batch, seconds)
+            if s.session_id and hasattr(self.service, "session_feedback"):
+                await self.service.session_feedback(s.session_id, kind, current.get("id") if current else None,
+                                                    current.get("_batch") if current else s.batch, seconds)
+            else:
+                await self.service.wave_feedback(s.station, kind, current.get("id") if current else None,
+                                                 current.get("_batch") if current else s.batch, seconds)
             s.feedback_error = None
         except Exception:
             # An analytics failure must not stop the stream or masquerade as success.
@@ -84,8 +90,15 @@ class RadioController:
             _LOGGER.warning("Rotor feedback failed for %s (%s)", s.entity_id, kind)
 
     async def replenish(self, s):
-        cursor = s.current["id"] if s.current else None
-        result = await self.service.wave_batch(s.station, cursor)
+        if s.session_id and hasattr(self.service, "session_tracks"):
+            known_queue = [str(track["id"]) for track in s.tracks if track.get("id")]
+            result = await self.service.session_tracks(s.session_id, known_queue)
+        elif hasattr(self.service, "session_new"):
+            result = await self.service.session_new(s.station, [str(track["id"]) for track in s.tracks if track.get("id")])
+            s.session_id = result.get("session_id")
+        else:
+            cursor = s.current["id"] if s.current else None
+            result = await self.service.wave_batch(s.station, cursor)
         s.batch = result.get("batch")
         known = {t["id"] for t in s.tracks}
         for track in result["tracks"]:

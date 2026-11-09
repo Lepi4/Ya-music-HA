@@ -287,6 +287,17 @@ class WaveSettingsView(_BaseView):
             return self.error(err)
 
 
+class WaveStationsView(_BaseView):
+    url = f"{API_PREFIX}/wave/stations"
+    name = f"api:{DOMAIN}:wave_stations"
+
+    async def get(self, request):
+        try:
+            return _json({"stations": await self.service(request).rotor_stations()})
+        except Exception as err:
+            return self.error(err)
+
+
 class RadioView(_BaseView):
     url = f"{API_PREFIX}/radio"
     name = f"api:{DOMAIN}:radio"
@@ -300,13 +311,21 @@ class RadioView(_BaseView):
                          if p["is_yandex_station"] and p["state"] not in ("unknown", "unavailable")}
             if entity_id not in available:
                 return _json({"error": "Выберите доступную Яндекс-колонку"}, 400)
-            station = "user:onyourwave"
-            if body.get("by_current"):
+            station = str(body.get("seed") or "user:onyourwave")
+            if body.get("by_current") or body.get("mode") in ("track", "genre", "artist", "album"):
                 state = service.hass.states.get(entity_id)
                 seed = track_id(state.attributes.get("media_content_id")) if state else ""
                 if not seed:
                     return _json({"error": "У текущего трека нет идентификатора Яндекс Музыки"}, 400)
-                station = f"track:{seed}"
+                mode = str(body.get("mode") or "track")
+                if mode == "track":
+                    station = f"track:{seed}"
+                else:
+                    seeds = await service.track_seeds(seed)
+                    value = seeds.get(mode)
+                    if not value:
+                        return _json({"error": f"Для текущего трека не найден seed: {mode}"}, 400)
+                    station = f"{mode}:{value}"
             elif "mood_energy" in body:
                 await service.set_wave_mood(str(body["mood_energy"]))
             await service.radio.start(entity_id, station)
@@ -508,6 +527,7 @@ def register_views(hass: HomeAssistant, service: YandexMusicService) -> None:
         SearchView,
         WaveView,
         WaveSettingsView,
+        WaveStationsView,
         RadioView,
         RadioControlView,
         ChartView,

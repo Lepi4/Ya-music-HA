@@ -10,7 +10,7 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.2`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.3`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
@@ -66,6 +66,7 @@ try {
     if(path.endsWith('/status')) return {authorized:true,account:{login:'Test'},players,playback:{queue:[],index:-1}};
     if(path.endsWith('/players')) return {players,playback:{queue:[],index:-1,radio:radioSessions}};
     if(path.endsWith('/wave/settings')) return {mood_energy:'all',moods:[{value:'all',name:'Любое'},{value:'calm',name:'Спокойное из API'}]};
+    if(path.endsWith('/wave/stations')) return {stations:[{seed:'activity:commute',category:'activity',title:'В дороге',description:'Музыка для пути'},{seed:'genre:rock',category:'genre',title:'Рок',description:'Рок по версии Rotor'}]};
     if(path.endsWith('/playlists')) return {playlists:[{uid:'1',kind:'1',title:'Playlist',count:1}]};
     if(path.endsWith('/recommendations')) return {shelves:[{title:'An arbitrary title supplied by Yandex',items:[{type:'playlist',uid:'1',kind:'2',title:'Recommended playlist',count:2},{type:'album',id:'9',title:'Recommended album'}]}]};
     if(path.endsWith('/podcasts')) return {title:'Podcast catalog title from Yandex',items:[{type:'album',id:'12',title:'Podcast show'}]};
@@ -97,7 +98,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.3.2');
+  assert.equal(metrics.version,'0.3.3');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
@@ -217,6 +218,8 @@ try {
     // Wave ownership, native track delivery, mood API and seed follow the selected speaker.
     await page.locator('[data-section="wave"]').click();
     await page.locator('#ym-wave-mood:not([disabled])').waitFor();
+    await page.locator('#ym-wave-stations [data-wave-seed]').first().waitFor();
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]').count(),2);
     assert.equal(await page.locator('#ym-wave-mood option[value="calm"]').textContent(),'Спокойное из API');
     await page.locator('#ym-wave-mood').selectOption('calm');
     await page.locator('[data-action="mood-wave"]').click();
@@ -234,7 +237,11 @@ try {
     await page.evaluate(()=>{const el=document.querySelector('yandex-music-chaos-panel');el._players.find(p=>p.entity_id==='media_player.two').media_id='12345';el.updateNowPlaying();});
     await page.locator('[data-action="track-wave"]').click();
     await page.waitForTimeout(60);
-    assert.deepEqual(calls.findLast(c=>c.path.endsWith('/radio')).body,{entity_id:'media_player.two',by_current:true});
+    assert.deepEqual(calls.findLast(c=>c.path.endsWith('/radio')).body,{entity_id:'media_player.two',by_current:true,mode:'track'});
+    await page.evaluate(()=>{const el=document.querySelector('yandex-music-chaos-panel');el._players.find(p=>p.entity_id==='media_player.two').media_id='12345';el.updateNowPlaying();});
+    await page.locator('[data-action="genre-wave"]').click();
+    await page.waitForTimeout(60);
+    assert.deepEqual(calls.findLast(c=>c.path.endsWith('/radio')).body,{entity_id:'media_player.two',by_current:true,mode:'genre'});
     await page.locator('[data-cmd="stop"]').click();
     await page.waitForTimeout(60);
     assert.equal(calls.findLast(c=>c.path.endsWith('/radio/control')).body.action,'stop');

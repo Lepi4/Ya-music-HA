@@ -424,6 +424,106 @@ class YandexMusicService:
             track_id=track, total_played_seconds=max(0, seconds),
         ))
 
+    @staticmethod
+    def _session_tracks(result: Any) -> list[dict[str, Any]]:
+        sequence = getattr(result, "sequence", []) or []
+        return [track for track in (normalize_track(getattr(row, "track", row)) for row in sequence) if track]
+
+    @staticmethod
+    def _session_payload(result: Any) -> dict[str, Any]:
+        session_id = getattr(result, "radio_session_id", None)
+        if not session_id:
+            raise YandexMusicError("Яндекс не вернул идентификатор Rotor-сессии")
+        return {
+            "session_id": str(session_id),
+            "batch": getattr(result, "batch_id", None),
+            "tracks": YandexMusicService._session_tracks(result),
+            "terminated": bool(getattr(result, "terminated", False)),
+        }
+
+    async def session_new(self, seeds: str | list[str], queue: list[str] | None = None) -> dict[str, Any]:
+        """Create the current Rotor session API and return its first batch."""
+        client = await self.client()
+        result = await self.hass.async_add_executor_job(lambda: client.rotor_session_new(
+            seeds, queue=queue or [], include_tracks_in_response=True, include_wave_model=True,
+            interactive=True, incognito=False,
+        ))
+        return self._session_payload(result)
+
+    async def session_tracks(self, session_id: str, queue: list[str]) -> dict[str, Any]:
+        """Get the next Rotor session batch using already delivered track IDs."""
+        client = await self.client()
+        result = await self.hass.async_add_executor_job(lambda: client.rotor_session_tracks(
+            session_id, queue=queue,
+        ))
+        return self._session_payload(result)
+
+    async def session_feedback(self, session_id: str, kind: str, track: str | None,
+                               batch: str | None, seconds=0) -> None:
+        """Send session feedback; this is separate from classic station feedback."""
+        from datetime import datetime, timezone
+        from yandex_music import SessionEvent
+
+        client = await self.client()
+        event = SessionEvent(
+            kind,
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            track_id=str(track) if track else None,
+            total_played_seconds=max(0, seconds) if seconds else None,
+        )
+        await self.hass.async_add_executor_job(lambda: client.rotor_session_feedback(
+            session_id, event, batch_id=batch, from_="home-assistant-yandex-music",
+        ))
+
+    async def rotor_stations(self) -> list[dict[str, Any]]:
+        """Read personal and themed Rotor stations without hard-coded categories."""
+        client = await self.client()
+        dashboard, rows = await asyncio.gather(
+            self.hass.async_add_executor_job(client.rotor_stations_dashboard),
+            self.hass.async_add_executor_job(lambda: client.rotor_stations_list(language="ru")),
+        )
+        source = list(getattr(dashboard, "stations", []) or []) + list(rows or [])
+        result, seen = [], set()
+        for item in source:
+            station = getattr(item, "station", item)
+            ident = getattr(getattr(station, "id", None), "tag", None)
+            kind = getattr(getattr(station, "id", None), "type", None)
+            seed = f"{kind}:{ident}" if kind and ident else getattr(station, "id_for_from", None)
+            if not seed or seed in seen:
+                continue
+            seen.add(seed)
+            title = getattr(item, "custom_name", None) or getattr(station, "name", None) or seed
+            description = getattr(item, "rup_description", None) or getattr(item, "explanation", None) or ""
+            parent = getattr(station, "parent_id", None)
+            raw_category = str(getattr(station, "id_for_from", "") or "")
+            category = raw_category.split("-", 1)[0] or (kind or "other")
+            if category == "micro":
+                category = "genre"
+            cover = getattr(station, "full_image_url", None) or getattr(station, "mts_full_image_url", None)
+            result.append({"seed": str(seed), "title": str(title), "description": str(description),
+                           "category": category, "parent": str(getattr(parent, "tag", "") or ""),
+                           "cover": _cover({"uri": cover}) if cover else None})
+        return result
+
+    async def track_seeds(self, track_id: str) -> dict[str, str]:
+        """Resolve seeds for the currently playing Yandex track."""
+        client = await self.client()
+        rows = await self.hass.async_add_executor_job(lambda: client.tracks(track_id))
+        track = next(iter(rows or []), None)
+        if track is None:
+            raise YandexMusicError("Яндекс не вернул данные текущего трека")
+        album = next(iter(getattr(track, "albums", []) or []), None)
+        genre = getattr(album, "genre", None) or getattr(track, "genre", None)
+        artists = getattr(track, "artists", []) or []
+        artist_id = getattr(next(iter(artists), None), "id", None)
+        album_id = getattr(album, "id", None)
+        return {key: str(value) for key, value in {
+            "track": getattr(track, "id", track_id),
+            "genre": genre,
+            "artist": artist_id,
+            "album": album_id,
+        }.items() if value}
+
     async def wave_settings(self) -> dict[str, Any]:
         client = await self.client()
         rows = await self.hass.async_add_executor_job(

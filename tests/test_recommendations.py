@@ -16,6 +16,11 @@ def load_service():
     core.HomeAssistant = object
     music = ModuleType("yandex_music")
     music.Client = object
+    class SessionEvent:
+        def __init__(self, type_, timestamp, track_id=None, total_played_seconds=None):
+            self.type, self.timestamp = type_, timestamp
+            self.track_id, self.total_played_seconds = track_id, total_played_seconds
+    music.SessionEvent = SessionEvent
     stubs = {"ym_test_component": package, "homeassistant": ModuleType("homeassistant"),
              "homeassistant.core": core, "yandex_music": music, "aiohttp": ModuleType("aiohttp")}
     with patch.dict(sys.modules, stubs):

@@ -10,7 +10,7 @@ import zipfile
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--config", required=True, help="HA configuration directory, e.g. /config")
-parser.add_argument("--version", default="v0.3.2")
+parser.add_argument("--version", default="v0.3.3")
 parser.add_argument("--archive-url", help="Override the release archive URL")
 args = parser.parse_args()
 config = Path(args.config).expanduser().resolve(strict=True)
@@ -48,7 +48,11 @@ with tempfile.TemporaryDirectory(prefix=".ym-install-", dir=components) as temp:
         raise SystemExit("Wrong integration archive")
     backup = None
     if target.exists():
-        backup = components / f".yandex_music_chaos-backup-{datetime.now():%Y%m%d-%H%M%S-%f}"
+        # Keep backups outside custom_components: Home Assistant scans every
+        # directory there as a possible integration, including hidden names.
+        backup_root = config / "backup" / "yandex_music_chaos"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup = backup_root / f"yandex_music_chaos-before-{datetime.now():%Y%m%d-%H%M%S-%f}"
         target.rename(backup)
     try:
         stage.rename(target)

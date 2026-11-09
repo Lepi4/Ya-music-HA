@@ -37,7 +37,7 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 self.assertTrue((target / "www" / "panel.js").is_file())
                 self.assertEqual((config / "configuration.yaml").read_text(), "# preserve me\n")
-                backups = list(target.parent.glob(".yandex_music_chaos-backup-*"))
+                backups = list((config / "backup" / "yandex_music_chaos").glob("yandex_music_chaos-before-*"))
                 self.assertEqual(len(backups), 1)
                 self.assertEqual((backups[0] / "old.txt").read_text(), "previous release")
                 # An invalid archive must be rejected before the existing installation is moved.
@@ -47,7 +47,7 @@ class InstallerTest(unittest.TestCase):
                 self.assertNotEqual(rejected.returncode, 0)
                 self.assertFalse((root / "escape.txt").exists())
                 self.assertTrue((target / "manifest.json").is_file())
-                self.assertEqual(len(list(target.parent.glob(".yandex_music_chaos-backup-*"))), 1)
+                self.assertEqual(len(list((config / "backup" / "yandex_music_chaos").glob("yandex_music_chaos-before-*"))), 1)
             finally:
                 server.shutdown()
                 server.server_close()
