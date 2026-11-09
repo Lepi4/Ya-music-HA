@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 
@@ -20,6 +23,7 @@ from .const import (
     STATIC_PREFIX,
 )
 from .yandex import YandexMusicService
+from .radio import RadioController
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[str] = []
@@ -35,6 +39,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(CONF_SOURCE_ENTITY, ""),
     )
     service = YandexMusicService(hass, source_entity)
+    service.radio = RadioController(service)
+    entry.async_on_unload(hass.bus.async_listen(EVENT_STATE_CHANGED, service.radio.handle_event))
+    entry.async_on_unload(async_track_time_interval(hass, service.radio.retry_waiting, timedelta(seconds=10)))
+    entry.async_on_unload(service.radio.close)
     hass.data[DOMAIN] = service
     hass.data[DATA_SERVICE] = service
 
@@ -61,7 +69,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "_panel_custom": {
                 "name": "yandex-music-chaos-panel",
                 "embed_iframe": False,
-                "module_url": f"{STATIC_PREFIX}/panel.js?v=0.3.1",
+                "module_url": f"{STATIC_PREFIX}/panel.js?v=0.3.2",
             },
             "entry_id": entry.entry_id,
         },

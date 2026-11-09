@@ -10,7 +10,7 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.1`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.2`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
@@ -21,6 +21,7 @@ const players = [
 ];
 const track = {id:'1',title:'Test song',artists:'Artist',duration:180};
 const selectedSources = new Map();
+const radioSessions = {};
 const sourceList = ['Station','media_player.shield','media_player.shield_3'];
 
 function remoteGet(path) {
@@ -48,13 +49,23 @@ try {
     assert.ok(!path.startsWith('/'), `callApi must receive a relative API path: ${path}`);
     if(live && method==='GET') return remoteGet(path);
     if(method==='POST') {
+      if(path.endsWith('/radio')) {
+        radioSessions[body.entity_id] = {active:true,station:body.by_current?'track:12345':'user:onyourwave',tracks:[track,{...track,id:'2'}],index:0};
+        return {radio:radioSessions};
+      }
+      if(path.endsWith('/radio/control')) {
+        if(['detach','stop'].includes(body.action)) delete radioSessions[body.entity_id];
+        else if(radioSessions[body.entity_id]) radioSessions[body.entity_id].index = body.action==='previous'?0:1;
+        return {handled:true,radio:radioSessions};
+      }
       if(path.endsWith('/select_source')) selectedSources.set(body.entity_id[0],body.source);
       return {ok:true}; // Never play/stop/change volume/source on real devices in this UI test.
     }
     if(path.startsWith('states/')) return {attributes:{media_content_id:'12345',source:selectedSources.get(path.slice(7))||'Station',source_list:sourceList}};
     if(path.endsWith('/config')) return {target_entities:players.slice(0,2).map(p=>p.entity_id)};
     if(path.endsWith('/status')) return {authorized:true,account:{login:'Test'},players,playback:{queue:[],index:-1}};
-    if(path.endsWith('/players')) return {players,playback:{queue:[],index:-1}};
+    if(path.endsWith('/players')) return {players,playback:{queue:[],index:-1,radio:radioSessions}};
+    if(path.endsWith('/wave/settings')) return {mood_energy:'all',moods:[{value:'all',name:'Любое'},{value:'calm',name:'Спокойное из API'}]};
     if(path.endsWith('/playlists')) return {playlists:[{uid:'1',kind:'1',title:'Playlist',count:1}]};
     if(path.endsWith('/recommendations')) return {shelves:[{title:'An arbitrary title supplied by Yandex',items:[{type:'playlist',uid:'1',kind:'2',title:'Recommended playlist',count:2},{type:'album',id:'9',title:'Recommended album'}]}]};
     if(path.endsWith('/podcasts')) return {title:'Podcast catalog title from Yandex',items:[{type:'album',id:'12',title:'Podcast show'}]};
@@ -86,7 +97,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.3.1');
+  assert.equal(metrics.version,'0.3.2');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
@@ -140,6 +151,31 @@ try {
   await page.locator('#ym-recommendations h2').first().waitFor();
 
   if(!live){
+    // A HA push between mouse down/up must not replace or move the pressed card.
+    await page.evaluate(()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      el.selectStation('media_player.two');
+      el._pressedButton=el.querySelector('[data-station="media_player.one"]');
+    });
+    const beforeSelectWrites=calls.filter(c=>c.method==='POST').length;
+    const oneBounds=await page.locator('[data-station="media_player.one"]').boundingBox();
+    await page.mouse.move(oneBounds.x+50,oneBounds.y+20);
+    await page.mouse.down();
+    await page.evaluate(()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      el.hass={...el.hass,states:{'media_player.one':{state:'playing',attributes:{media_title:'Other room song',media_content_id:'111',volume_level:0.5,source:'Station',source_list:['Station']}}}};
+      if(el.querySelector('[data-station="media_player.one"]')!==el._pressedButton)throw Error('Pressed button replaced');
+    });
+    await page.mouse.up();
+    assert.equal(await page.locator('#ym-now-title').textContent(),'Other room song');
+    assert.equal(calls.filter(c=>c.method==='POST').length,beforeSelectWrites);
+    await page.evaluate(async()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      el.hass={...el.hass,states:{}};
+      await el.refreshPlayers();
+      el.selectStation('media_player.two');
+    });
+
     await page.locator('[data-section="search"]').click();
     await page.locator('.ym-search-welcome').waitFor();
     assert.ok((await page.locator('[data-section="search"]').getAttribute('class')).includes('active'));
@@ -178,6 +214,32 @@ try {
     assert.deepEqual(calls.findLast(c=>c.path.endsWith('/media_play_pause')).body.entity_id,['media_player.one']);
     await page.locator('[data-station="media_player.two"]').click();
     assert.equal(await page.locator('#ym-volume').inputValue(),'0.27');
+    // Wave ownership, native track delivery, mood API and seed follow the selected speaker.
+    await page.locator('[data-section="wave"]').click();
+    await page.locator('#ym-wave-mood:not([disabled])').waitFor();
+    assert.equal(await page.locator('#ym-wave-mood option[value="calm"]').textContent(),'Спокойное из API');
+    await page.locator('#ym-wave-mood').selectOption('calm');
+    await page.locator('[data-action="mood-wave"]').click();
+    await page.waitForTimeout(60);
+    assert.deepEqual(calls.findLast(c=>c.path.endsWith('/radio')).body,{entity_id:'media_player.two',by_current:false,mood_energy:'calm'});
+    await page.locator('[data-cmd="next"]').click();
+    await page.waitForTimeout(60);
+    assert.equal(calls.findLast(c=>c.path.endsWith('/radio/control')).body.entity_id,'media_player.two');
+    await page.locator('[data-station="media_player.one"]').click();
+    const radioWrites=calls.filter(c=>c.path.endsWith('/radio/control')).length;
+    await page.locator('[data-cmd="toggle"]').click();
+    await page.waitForTimeout(60);
+    assert.equal(calls.filter(c=>c.path.endsWith('/radio/control')).length,radioWrites);
+    await page.locator('[data-station="media_player.two"]').click();
+    await page.evaluate(()=>{const el=document.querySelector('yandex-music-chaos-panel');el._players.find(p=>p.entity_id==='media_player.two').media_id='12345';el.updateNowPlaying();});
+    await page.locator('[data-action="track-wave"]').click();
+    await page.waitForTimeout(60);
+    assert.deepEqual(calls.findLast(c=>c.path.endsWith('/radio')).body,{entity_id:'media_player.two',by_current:true});
+    await page.locator('[data-cmd="stop"]').click();
+    await page.waitForTimeout(60);
+    assert.equal(calls.findLast(c=>c.path.endsWith('/radio/control')).body.action,'stop');
+    await page.locator('[data-section="home"]').click();
+    await page.locator('#ym-recommendations h2').waitFor();
     assert.ok((await page.locator('[data-station="media_player.two"]').getAttribute('class')).includes('playing'));
     await page.locator('#ym-volume').evaluate(el=>{el.value='0.31';el.dispatchEvent(new Event('change',{bubbles:true}));});
     await page.waitForTimeout(100);
@@ -229,7 +291,13 @@ try {
     await page.evaluate(()=>document.querySelector('#panel').style.left='0');
     const mobileVolume=await page.locator('#ym-volume').boundingBox();
     assert.ok(mobileVolume?.width>50);
-    assert.ok(mobileVolume.y+mobileVolume.height<size.height);
+    assert.ok(mobileVolume.width>size.width*0.5, 'Volume should use the freed label space');
+    const [info, controls, timeline, volume, stop] = await Promise.all(['.ym-now','.ym-controls','.ym-timeline','.ym-volume','.ym-controls [data-cmd="stop"]'].map(s=>page.locator(s).boundingBox()));
+    if(size.width<=800) assert.ok(info.y+info.height<=controls.y+1 && controls.y+controls.height<=timeline.y+1 && timeline.y+timeline.height<=volume.y+1);
+    assert.ok(stop && stop.x>=controls.x && stop.x+stop.width<=size.width, 'Stop must stay in the controls row');
+    await page.locator('#ym-volume').scrollIntoViewIfNeeded();
+    const visibleVolume=await page.locator('#ym-volume').boundingBox();
+    assert.ok(visibleVolume.y>=0 && visibleVolume.y+visibleVolume.height<=size.height);
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     const playSize=await page.locator('[data-cmd="toggle"]').boundingBox();
     assert.ok(playSize.width>=44 && playSize.height>=44);
@@ -254,6 +322,28 @@ try {
   await page.waitForTimeout(40);
   const naturalHeight=await page.locator('yandex-music-chaos-panel').boundingBox();
   assert.equal(naturalHeight.y+naturalHeight.height,844);
+  if(!live) {
+    const touchContext=await browser.newContext({hasTouch:true,isMobile:true,viewport:{width:390,height:844}});
+    const touchPage=await touchContext.newPage();
+    await touchPage.setContent('<meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0}#panel{height:100dvh}</style><div id="panel"></div>');
+    await touchPage.addScriptTag({type:'module',content:source});
+    await touchPage.evaluate(players=>{
+      const el=document.createElement('yandex-music-chaos-panel');
+      el.hass={callApi:async(method,path)=>{
+        if(method!=='GET')throw Error('Selecting a speaker must not send playback commands');
+        if(path.endsWith('/status'))return {players:players.map(p=>({...p,state:'playing',title:p.name+' song'})),account:{}};
+        if(path.startsWith('states/'))return {attributes:{source_list:['Station'],source:'Station'}};
+        return {tracks:[],playlists:[],shelves:[]};
+      }};
+      document.querySelector('#panel').append(el);
+    },players);
+    await touchPage.locator('[data-station="media_player.two"]').waitFor();
+    await touchPage.locator('[data-station="media_player.two"]').tap();
+    assert.equal(await touchPage.locator('#ym-now-title').textContent(),'Station Two song');
+    await touchPage.locator('[data-station="media_player.one"]').tap();
+    assert.equal(await touchPage.locator('#ym-now-title').textContent(),'Station One song');
+    await touchContext.close();
+  }
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({live,requests:calls.length,stations:shownStations,mobileSizes:4,metrics,errors}));
 } finally {await browser.close();}

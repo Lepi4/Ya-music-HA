@@ -27,6 +27,24 @@ def load_service():
 
 
 class RecommendationsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_wave_settings_use_api_options_and_preserve_other_settings(self):
+        moods = [SimpleNamespace(value="calm", name="A localized API label"), SimpleNamespace(value="all", name="Any")]
+        rows = [SimpleNamespace(settings2=SimpleNamespace(mood_energy="all", diversity="discover", language="russian"),
+                                station=SimpleNamespace(restrictions2=SimpleNamespace(mood_energy=SimpleNamespace(possible_values=moods))))]
+        calls = []
+        client = SimpleNamespace(rotor_station_info=lambda station: rows,
+                                 rotor_station_settings2=lambda *args, **kw: calls.append((args, kw)) or True)
+        async def executor(fn): return fn()
+        service = load_service()(SimpleNamespace(async_add_executor_job=executor), "media_player.test")
+        async def get_client(): return client
+        service.client = get_client
+        result = await service.set_wave_mood("calm")
+        self.assertEqual(result["moods"][0]["name"], "A localized API label")
+        self.assertEqual(calls[0], (("user:onyourwave",), {"mood_energy":"calm", "diversity":"discover", "language":"russian"}))
+        with self.assertRaises(RuntimeError):
+            await service.set_wave_mood("invented")
+        self.assertEqual(len(calls), 1)
+
     async def test_empty_likes_does_not_request_empty_track_ids(self):
         async def executor(fn): return fn()
         def forbidden_tracks(**kwargs): raise AssertionError("tracks([]) must never reach the API")

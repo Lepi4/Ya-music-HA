@@ -406,12 +406,56 @@ class YandexMusicService:
         return await self.hass.async_add_executor_job(fetch)
 
     async def wave(self, station: str = "user:onyourwave", queue: str | None = None) -> list[dict[str, Any]]:
+        return (await self.wave_batch(station, queue))["tracks"]
+
+    async def wave_batch(self, station: str = "user:onyourwave", queue: str | None = None) -> dict[str, Any]:
         client = await self.client()
         result = await self.hass.async_add_executor_job(
             lambda: client.rotor_station_tracks(station, settings2=queue is None, queue=queue)
         )
         sequence = getattr(result, "sequence", []) or []
-        return [track for track in (normalize_track(getattr(row, "track", row)) for row in sequence) if track]
+        return {"tracks": [track for track in (normalize_track(getattr(row, "track", row)) for row in sequence) if track],
+                "batch": getattr(result, "batch_id", None)}
+
+    async def wave_feedback(self, station: str, kind: str, track: str | None, batch: str | None, seconds=0):
+        client = await self.client()
+        await self.hass.async_add_executor_job(lambda: client.rotor_station_feedback(
+            station, kind, from_="home-assistant-yandex-music", batch_id=batch,
+            track_id=track, total_played_seconds=max(0, seconds),
+        ))
+
+    async def wave_settings(self) -> dict[str, Any]:
+        client = await self.client()
+        rows = await self.hass.async_add_executor_job(
+            lambda: client.rotor_station_info("user:onyourwave")
+        )
+        row = next(iter(rows or []), None)
+        current = getattr(row, "settings2", None)
+        restrictions = getattr(getattr(row, "station", None), "restrictions2", None)
+        moods = getattr(getattr(restrictions, "mood_energy", None), "possible_values", []) or []
+        return {
+            "mood_energy": getattr(current, "mood_energy", None),
+            "diversity": getattr(current, "diversity", None),
+            "language": getattr(current, "language", None),
+            "moods": [{"value": str(item.value), "name": str(item.name)} for item in moods],
+        }
+
+    async def set_wave_mood(self, mood: str) -> dict[str, Any]:
+        settings = await self.wave_settings()
+        if mood not in {item["value"] for item in settings["moods"]}:
+            raise YandexMusicError("Яндекс Музыка не предлагает это настроение")
+        if not settings["diversity"] or not settings["language"]:
+            raise YandexMusicError("Яндекс Музыка не вернула текущие настройки волны")
+        client = await self.client()
+        ok = await self.hass.async_add_executor_job(
+            lambda: client.rotor_station_settings2(
+                "user:onyourwave", mood_energy=mood,
+                diversity=settings["diversity"], language=settings["language"],
+            )
+        )
+        if not ok:
+            raise YandexMusicError("Яндекс Музыка не сохранила настроение")
+        return {**settings, "mood_energy": mood}
 
     async def chart(self) -> list[dict[str, Any]]:
         client = await self.client()

@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.3.1";
+const PANEL_VERSION = "0.3.2";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -24,6 +24,8 @@ class YandexMusicChaosPanel extends HTMLElement {
 
   connectedCallback() {
     if (this._mounted) {
+      window.addEventListener("pointerup", this._releaseStation);
+      window.addEventListener("pointercancel", this._releaseStation);
       this.startLayout();
       this.startPolling();
       this.refreshPlayers();
@@ -39,6 +41,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     this._players = [];
     this._selectedPlayerId = "";
     this._stationQueues = new Map();
+    this._radioSessions = {};
     this._stationTargets = new Map();
     this._catalogCache = new Map();
     this._sourceInfo = new Map();
@@ -67,8 +70,9 @@ class YandexMusicChaosPanel extends HTMLElement {
       <section class="ym-player" aria-label="Управление выбранной колонкой">
         <div class="ym-now"><div class="ym-artwork"><span>♫</span><img id="ym-cover" alt="" hidden></div><div class="ym-now-copy"><span id="ym-player-name" class="ym-player-name">Выберите колонку</span><strong id="ym-now-title">Ничего не играет</strong><span id="ym-now-artist" class="ym-muted">Выберите музыку в библиотеке</span></div></div>
         <div class="ym-transport"><div class="ym-controls"><button data-cmd="previous" aria-label="Предыдущий трек">⏮</button><button class="ym-play" data-cmd="toggle" aria-label="Воспроизвести">▶</button><button data-cmd="next" aria-label="Следующий трек">⏭</button><button data-cmd="stop" aria-label="Остановить">■</button></div><div class="ym-timeline"><span id="ym-position">0:00</span><input id="ym-seek" type="range" min="0" max="1" value="0" step="1" aria-label="Позиция трека" disabled><span id="ym-duration">0:00</span></div></div>
-        <div class="ym-player-actions"><button class="ym-action" data-action="sources" aria-haspopup="dialog">▣ <span>Куда воспроизводить<small id="ym-target-label">Выберите колонку</small></span></button><button class="ym-icon-button" data-action="queue" aria-label="Открыть очередь" title="Очередь">☷</button><button class="ym-icon-button ym-mobile-stop" data-cmd="stop" aria-label="Остановить">■</button></div>
-        <div class="ym-volume"><button class="ym-icon-button" data-cmd="mute" aria-label="Выключить звук">♪</button><label for="ym-volume" id="ym-volume-label">Громкость колонки</label><input id="ym-volume" type="range" min="0" max="1" step="0.01" value="0" aria-label="Громкость выбранной колонки" disabled><output id="ym-volume-value">—</output></div>
+        <div class="ym-player-actions"><button class="ym-action" data-action="sources" aria-haspopup="dialog">▣ <span>Куда воспроизводить<small id="ym-target-label">Выберите колонку</small></span></button><button class="ym-icon-button" data-action="queue" aria-label="Открыть очередь" title="Очередь">☷</button><button class="ym-icon-button" data-action="track-wave" aria-label="Волна по текущему треку" title="Волна по текущему треку">◉</button></div>
+        <div class="ym-volume"><button class="ym-icon-button" data-cmd="mute" aria-label="Выключить звук">♪</button><input id="ym-volume" type="range" min="0" max="1" step="0.01" value="0" aria-label="Громкость выбранной колонки" disabled><output id="ym-volume-value">—</output></div>
+        <p id="ym-radio-status" class="ym-radio-status" role="status" hidden></p>
       </section>
     </section>
     <main class="ym-main"><header class="ym-header"><h1 id="ym-heading">Главная</h1><div class="ym-search"><span>⌕</span><input id="ym-search" type="search" placeholder="Трек, исполнитель, альбом…" aria-label="Поиск в Яндекс Музыке"><button data-action="search" aria-label="Найти">Найти</button></div></header><div id="ym-error" class="ym-error hidden" role="alert"></div><div id="ym-notice" class="ym-notice hidden" role="status"></div><section id="ym-content" aria-live="polite"></section></main>
@@ -79,6 +83,20 @@ class YandexMusicChaosPanel extends HTMLElement {
 <dialog id="ym-input-source-dialog" class="ym-dialog" aria-labelledby="ym-input-source-title"><div class="ym-dialog-head"><h2 id="ym-input-source-title">Источник воспроизведения</h2><button class="ym-icon-button" data-action="close-dialog" aria-label="Закрыть">×</button></div><p id="ym-input-source-station" class="ym-muted"></p><div id="ym-input-source-options"></div><p id="ym-input-source-error" class="ym-inline-error" role="alert"></p></dialog>
 `;
     this.shadowRoot.addEventListener("click", (event) => this.onClick(event));
+    this.shadowRoot.addEventListener("pointerdown", event => {
+      if (event.target.closest("[data-station]")) this._stationPointer = event.pointerId;
+    });
+    const releaseStation = event => {
+      if (this._stationPointer !== event.pointerId) return;
+      // Let the click land before a state update can reorder the cards.
+      setTimeout(() => { this._stationPointer = null; if (this.isConnected) this.renderOutputs(); }, 0);
+    };
+    this.shadowRoot.addEventListener("pointerup", releaseStation);
+    this.shadowRoot.addEventListener("pointercancel", releaseStation);
+    this.shadowRoot.addEventListener("lostpointercapture", releaseStation);
+    this._releaseStation = releaseStation;
+    window.addEventListener("pointerup", releaseStation);
+    window.addEventListener("pointercancel", releaseStation);
     this.shadowRoot.addEventListener("change", (event) => this.onChange(event));
     this.querySelector("#ym-search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") this.search();
@@ -134,6 +152,9 @@ class YandexMusicChaosPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    window.removeEventListener("pointerup", this._releaseStation);
+    window.removeEventListener("pointercancel", this._releaseStation);
+    this._stationPointer = null;
     clearInterval(this._pollTimer);
     this._pollTimer = null;
     clearTimeout(this._noticeTimer);
@@ -155,6 +176,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     try {
       const status = await this.api("/status");
       this._players = status.players || [];
+      this._radioSessions = status.playback?.radio || {};
       let saved;
       try { saved = localStorage.getItem("ym-chaos.active-player"); } catch (_) {}
       const stations = this.stations();
@@ -180,9 +202,11 @@ class YandexMusicChaosPanel extends HTMLElement {
   async refreshPlayers() {
     if (!this.hass?.callApi || !this._initialized || this._refreshing) return;
     this._refreshing = true;
+    const radioRevision = this._radioRevision;
     try {
       const data = await this.api("/players");
       this._players = data.players || [];
+      if (radioRevision === this._radioRevision) this._radioSessions = data.playback?.radio || {};
       this.syncPlayerStates();
       this.updateNowPlaying();
       this.renderTargets();
@@ -268,7 +292,11 @@ class YandexMusicChaosPanel extends HTMLElement {
       if (extra.title || data.title) this.querySelector("#ym-heading").textContent = extra.title || data.title;
       this._sectionData = data;
       this._sectionTitle = this.querySelector("#ym-heading").textContent;
-      if (section === "audiobooks") {
+      if (section === "wave") {
+        this._tracks = data.tracks || [];
+        content.innerHTML = '<div class="ym-wave-banner"><div><h2>Бесконечная волна</h2><p>Отдельный поток на выбранной колонке. Следующие треки подгружает Home Assistant.</p></div><button class="ym-primary" data-action="start-wave">▶ Слушать</button></div><div class="ym-wave-settings"><label for="ym-wave-mood">Настроение</label><select id="ym-wave-mood" disabled><option value="">Загрузка…</option></select><button class="ym-secondary" data-action="mood-wave" disabled>Применить и слушать</button><p class="ym-muted">Настроение сохраняется в музыкальном аккаунте и может влиять на его волну на других устройствах.</p><p id="ym-wave-settings-error" class="ym-muted"></p></div><div class="ym-section-head"><h2>Фрагмент рекомендаций</h2></div><p class="ym-muted">Это первый пакет API, а не полная очередь потока. Для непрерывного воспроизведения нажмите «Слушать».</p>'+this.trackRows(this._tracks);
+        this.loadWaveSettings(revision);
+      } else if (section === "audiobooks") {
         this._bookQuery = extra.query || "";
         this.renderBooks(data);
       } else if (section === "playlists" || section === "podcasts") content.innerHTML = `<div class="ym-card-grid">${(data.playlists || data.items || []).map(item => this.card(item)).join("")}</div>`;
@@ -295,6 +323,11 @@ class YandexMusicChaosPanel extends HTMLElement {
     if (this._sectionData) {
       if (this._section === "audiobooks") {
         this.renderBooks({...this._sectionData, shelves:(this._sectionData.shelves || []).map(shelf => ({...shelf, items:shelf.items.filter(matches)}))});
+      } else if (this._section === "wave") {
+        content.querySelectorAll(".ym-track").forEach(node => {
+          const text = node.textContent.toLocaleLowerCase();
+          node.hidden = !words.every(word => text.includes(word));
+        });
       } else if (this._section === "playlists" || this._section === "podcasts") {
         const items = (this._sectionData.playlists || this._sectionData.items || []).filter(matches);
         content.innerHTML = items.length ? `<div class="ym-card-grid">${items.map(item => this.card(item)).join("")}</div>` : '<p class="ym-empty">В этом разделе ничего не найдено.</p>';
@@ -375,8 +408,34 @@ class YandexMusicChaosPanel extends HTMLElement {
     if (!box) return;
     const playing = p => ["playing", "buffering"].includes(p.state);
     const stations = [...this.stations()].sort((a,b) => Number(playing(b))-Number(playing(a)) || a.name.localeCompare(b.name));
-    const markup = stations.length ? stations.map(p => `<button class="ym-station ${playing(p) ? "playing" : ""} ${p.entity_id === this._selectedPlayerId ? "selected" : ""}" data-station="${escapeHtml(p.entity_id)}" aria-pressed="${p.entity_id === this._selectedPlayerId}" ${["unavailable", "unknown"].includes(p.state) ? "disabled" : ""}><span class="ym-speaker-icon">▣</span><span class="ym-station-copy"><strong>${escapeHtml(p.name)}</strong><small><i></i>${stateLabel(p.state)}${p.title ? ` · ${escapeHtml(p.title)}` : ""}</small></span><span class="ym-selected-mark">${p.entity_id === this._selectedPlayerId ? "✓" : ""}</span></button>`).join("") : '<p class="ym-muted">Нет доступных Яндекс-колонок.</p>';
-    if (box.innerHTML !== markup) box.innerHTML = markup;
+    if (!stations.length) {
+      if (!box.querySelector(".ym-muted")) box.innerHTML = '<p class="ym-muted">Нет доступных Яндекс-колонок.</p>';
+      return;
+    }
+    box.querySelector(".ym-muted")?.remove();
+    const buttons = new Map([...box.querySelectorAll("[data-station]")].map(button => [button.dataset.station, button]));
+    for (const p of stations) {
+      let button = buttons.get(p.entity_id);
+      if (!button) {
+        button = document.createElement("button");
+        button.dataset.station = p.entity_id;
+        button.innerHTML = '<span class="ym-speaker-icon">▣</span><span class="ym-station-copy"><strong></strong><small><i></i><span></span></small></span><span class="ym-selected-mark"></span>';
+        box.append(button);
+      }
+      const selected = p.entity_id === this._selectedPlayerId;
+      button.className = `ym-station ${playing(p) ? "playing" : ""} ${selected ? "selected" : ""}`;
+      button.setAttribute("aria-pressed", String(selected));
+      button.disabled = ["unavailable", "unknown"].includes(p.state);
+      button.querySelector("strong").textContent = p.name;
+      button.querySelector("small span").textContent = `${stateLabel(p.state)}${p.title ? ` · ${p.title}` : ""}`;
+      button.querySelector(".ym-selected-mark").textContent = selected ? "✓" : "";
+    }
+    for (const [id, button] of buttons) if (!stations.some(p => p.entity_id === id)) button.remove();
+    // Retain the exact button nodes across HA state pushes, including during a tap.
+    if (this._stationPointer == null) stations.forEach((p, index) => {
+      const button = [...box.children].find(node => node.dataset.station === p.entity_id);
+      if (box.children[index] !== button) box.insertBefore(button, box.children[index] || null);
+    });
   }
 
   updateNowPlaying() {
@@ -392,7 +451,6 @@ class YandexMusicChaosPanel extends HTMLElement {
     const volume = this.querySelector("#ym-volume");
     volume.disabled = disabled || typeof player?.volume !== "number";
     if (this.shadowRoot.activeElement !== volume && !volume.disabled) volume.value = String(player.volume);
-    this.querySelector("#ym-volume-label").textContent = player ? `Громкость · ${player.name}` : "Громкость колонки";
     this.querySelector("#ym-volume-value").textContent = volume.disabled ? "—" : `${Math.round(Number(volume.value)*100)}%`;
     const mute = this.querySelector('[data-cmd="mute"]');
     mute.disabled = volume.disabled;
@@ -411,6 +469,11 @@ class YandexMusicChaosPanel extends HTMLElement {
     this.querySelector("#ym-duration").textContent = formatTime(player?.duration);
     this.querySelector("#ym-target-label").textContent = this._targets.map(id => this.stations().find(p => p.entity_id === id)?.name).filter(Boolean).join(", ") || "Выберите колонку";
     this.querySelector('[data-action="sources"]').disabled = disabled;
+    this.querySelector('[data-action="track-wave"]').disabled = disabled || !/^(?:\d+)(?::\d+)?$|\/track\/\d+/.test(String(player?.media_id || "")) || this._radioBusy;
+    const radio = this._radioSessions[player?.entity_id];
+    const radioStatus = this.querySelector("#ym-radio-status");
+    radioStatus.hidden = !radio;
+    radioStatus.textContent = radio ? radio.error || radio.feedback_error || (radio.station.startsWith("track:") ? "Волна по треку · очередь продолжает Home Assistant" : "Моя волна · очередь продолжает Home Assistant") : "";
     const sourceButton = this.querySelector('[data-action="input-source"]');
     sourceButton.disabled = disabled || this._inputSourceBusy;
     this.querySelector("#ym-input-source-name").textContent = this.sourceName(player?.input_source) || (player?.source_list ? "Не выбран" : "Загрузка…");
@@ -455,6 +518,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     this.querySelectorAll("[data-input-source]").forEach(button => { button.disabled = true; });
     this.updateNowPlaying();
     try {
+      if (this._radioSessions[id]) await this.radioControl("detach", id);
       await this.media("select_source", {entity_id:[id], source});
       await this.hydrateSource(id, true);
       this.querySelector("#ym-input-source-dialog").close();
@@ -478,6 +542,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     this._sending = true;
     this.clearError();
     try {
+      for (const id of allowed) if (this._radioSessions[id]) await this.radioControl("detach", id);
       // Native Yandex playMusic uses the Yandex stream and speaker metadata.
       await this.media("play_media", {entity_id:allowed, media_content_id:String(tracks[index].id), media_content_type:"track"});
       allowed.forEach(id => {
@@ -496,6 +561,11 @@ class YandexMusicChaosPanel extends HTMLElement {
     if (!player || ["unavailable", "unknown"].includes(player.state)) return;
     this.clearError();
     try {
+      if (this._radioSessions[player.entity_id]?.active && ["next", "previous", "stop"].includes(action)) {
+        await this.radioControl(action, player.entity_id);
+        await this.refreshPlayers();
+        return;
+      }
       if (action === "next" || action === "previous") {
         const queue = this._stationQueues.get(player.entity_id);
         const current = queue?.tracks[queue.index];
@@ -506,7 +576,7 @@ class YandexMusicChaosPanel extends HTMLElement {
       }
       const services = {next:"media_next_track", previous:"media_previous_track", toggle:"media_play_pause", stop:"media_stop", seek:"media_seek", volume_set:"volume_set", mute:"volume_mute"};
       const data = action === "volume_set" ? {volume_level:extra.level} : action === "seek" ? {seek_position:extra.position} : action === "mute" ? {is_volume_muted:!player.muted} : {};
-      await this.media(services[action], data);
+      await this.media(services[action], {entity_id:[player.entity_id], ...data});
       if (action === "stop") this._stationQueues.delete(player.entity_id);
       await this.refreshPlayers();
     } catch (error) { this.showError(error); }
@@ -551,9 +621,11 @@ class YandexMusicChaosPanel extends HTMLElement {
   }
 
   openQueue() {
-    const queue = this._stationQueues.get(this._selectedPlayerId);
+    const radio = this._radioSessions[this._selectedPlayerId];
+    const queue = radio || this._stationQueues.get(this._selectedPlayerId);
     this.querySelector("#ym-queue-title").textContent = `Очередь · ${this.activePlayer()?.name || ""}`;
-    this.querySelector("#ym-queue-content").innerHTML = queue?.tracks.length ? queue.tracks.map((track,index) => `<button data-queue-index="${index}" class="ym-queue-item ${index === queue.index ? "active" : ""}"><span>${index === queue.index ? "▶" : index+1}</span><span>${escapeHtml(track.title)}<small>${escapeHtml(track.artists || "")}</small></span></button>`).join("") : '<p class="ym-muted">Очередью управляет колонка. Выберите трек или плейлист в библиотеке, чтобы открыть его очередь здесь.</p>';
+    this.querySelector("#ym-queue-content").innerHTML = (radio ? `<p class="ym-muted">Бесконечная волна · следующие треки подгружаются автоматически.</p>${radio.error ? `<p role="alert">${escapeHtml(radio.error)}</p>` : ""}${radio.feedback_error ? `<p role="alert">${escapeHtml(radio.feedback_error)}</p>` : ""}` : "") + (queue?.tracks.length ? queue.tracks.map((track,index) => `<button data-queue-index="${index}" class="ym-queue-item ${index === queue.index ? "active" : ""}"><span>${index === queue.index ? "▶" : index+1}</span><span>${escapeHtml(track.title)}<small>${escapeHtml(track.artists || "")}</small></span></button>`).join("") : '<p class="ym-muted">Очередью управляет колонка. Выберите трек или плейлист в библиотеке, чтобы открыть его очередь здесь.</p>');
+    this._queueContext = this._selectedPlayerId;
     this.querySelector("#ym-queue-dialog").showModal();
   }
 
@@ -562,6 +634,53 @@ class YandexMusicChaosPanel extends HTMLElement {
     if (this._section === "audiobooks") { await this.loadSection("audiobooks", {query}); return; }
     if (this._section !== "search") { this.filterSection(query); return; }
     await this.loadSection("search", {query});
+  }
+
+  async loadWaveSettings(revision) {
+    try {
+      const data = await this.api("/wave/settings");
+      if (revision !== this._sectionRevision) return;
+      const select = this.querySelector("#ym-wave-mood");
+      select.innerHTML = (data.moods || []).map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.name)}</option>`).join("");
+      if (data.mood_energy) select.value = data.mood_energy;
+      select.disabled = !data.moods?.length;
+      this.querySelector('[data-action="mood-wave"]').disabled = select.disabled;
+      if (select.disabled) this.querySelector("#ym-wave-settings-error").textContent = "Яндекс не вернул доступных настроений.";
+    } catch (_) {
+      if (revision === this._sectionRevision) this.querySelector("#ym-wave-settings-error").textContent = "Не удалось загрузить настройки. Обычную волну можно запустить кнопкой «Слушать».";
+    }
+  }
+
+  async startWave(byCurrent = false, mood) {
+    const id = this._selectedPlayerId;
+    if (!id || this._radioBusy) return;
+    this._radioBusy = true;
+    this.clearError();
+    this.querySelectorAll('[data-action="start-wave"], [data-action="track-wave"], [data-action="mood-wave"]').forEach(b => { b.disabled = true; });
+    try {
+      const body = {entity_id:id, by_current:byCurrent};
+      if (mood !== undefined) body.mood_energy = mood;
+      const revision = this._radioRevision = (this._radioRevision || 0)+1;
+      const data = await this.api("/radio", {method:"POST", body});
+      if (revision === this._radioRevision) this._radioSessions = data.radio || {};
+      this._stationQueues.delete(id);
+      this._stationTargets.set(id, [id]);
+      if (this._selectedPlayerId === id) this._targets = [id];
+      this.notice(`Волна: ${this.stations().find(p => p.entity_id === id)?.name || id}`);
+      await this.refreshPlayers();
+    } catch (error) { this.showError(error); }
+    finally {
+      this._radioBusy = false;
+      this.querySelectorAll('[data-action="start-wave"], [data-action="mood-wave"]').forEach(b => { b.disabled = b.dataset.action === "mood-wave" && !!this.querySelector("#ym-wave-mood")?.disabled; });
+      this.updateNowPlaying();
+    }
+  }
+
+  async radioControl(action, id = this._selectedPlayerId, index) {
+    const revision = this._radioRevision = (this._radioRevision || 0)+1;
+    const data = await this.api("/radio/control", {method:"POST", body:{entity_id:id, action, index}});
+    if (revision === this._radioRevision) this._radioSessions = data.radio || {};
+    return data.handled;
   }
 
   onChange(event) {
@@ -586,7 +705,13 @@ class YandexMusicChaosPanel extends HTMLElement {
       this.playTracks(tracks, tracks.findIndex(t => String(t.id) === id)).catch(() => {}); return;
     }
     const queued = event.target.closest("[data-queue-index]");
-    if (queued) { this.playTracks(this._stationQueues.get(this._selectedPlayerId).tracks, Number(queued.dataset.queueIndex), [this._selectedPlayerId]).catch(() => {}); return; }
+    if (queued) {
+      const id = this._queueContext;
+      if (id !== this._selectedPlayerId) return;
+      if (this._radioSessions[id]) this.radioControl("select", id, Number(queued.dataset.queueIndex)).catch(error => this.showError(error));
+      else this.playTracks(this._stationQueues.get(id).tracks, Number(queued.dataset.queueIndex), [id]).catch(() => {});
+      return;
+    }
     const playlist = event.target.closest("[data-playlist-uid]");
     if (playlist) { this.loadSection("playlist", {uid:playlist.dataset.playlistUid, kind:playlist.dataset.playlistKind, title:playlist.dataset.title}); return; }
     const album = event.target.closest("[data-album]");
@@ -603,7 +728,9 @@ class YandexMusicChaosPanel extends HTMLElement {
     if (action === "close-dialog") event.target.closest("dialog").close();
     if (action === "search") this.search();
     if (action === "play-all") this.playTracks(this._tracks, 0).catch(() => {});
-    if (action === "start-wave") this.loadSection("wave").then(() => { if (this._section === "wave") return this.playTracks(this._tracks, 0); }).catch(() => {});
+    if (action === "start-wave") this.startWave();
+    if (action === "track-wave") this.startWave(true);
+    if (action === "mood-wave") this.startWave(false, this.querySelector("#ym-wave-mood").value);
   }
 }
 
@@ -622,6 +749,38 @@ const CSS = `
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 @media(max-width:800px){.ym-input-source-button{min-height:56px;padding:8px 10px;gap:8px}.ym-input-source-button strong{font-size:13px}.ym-input-source-change{font-size:11px;max-width:72px}.ym-player-area{max-height:58dvh}.ym-main{min-height:calc(100dvh - 360px)}}
 @media(max-height:600px){.ym-player-area{position:relative;max-height:none}.ym-input-source-button{min-height:48px}.ym-workspace{scrollbar-gutter:auto}}
+.ym-volume input{flex:1;width:100%;min-width:0}
+#ym-volume{-webkit-appearance:none;appearance:none;background:transparent;min-height:44px;touch-action:pan-y}
+#ym-volume::-webkit-slider-runnable-track{height:8px;background:#555;border-radius:8px}
+#ym-volume::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;margin-top:-8px;background:var(--ym-primary);border:3px solid #202020;border-radius:50%}
+#ym-volume::-moz-range-track{height:8px;background:#555;border-radius:8px}
+#ym-volume::-moz-range-progress{height:8px;background:var(--ym-primary);border-radius:8px}
+#ym-volume::-moz-range-thumb{width:20px;height:20px;background:var(--ym-primary);border:2px solid #202020;border-radius:50%}
+.ym-wave-settings{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px}.ym-wave-settings p{flex-basis:100%;font-size:12px}.ym-wave-settings select{min-height:44px;min-width:140px;max-width:100%;font:inherit;border:1px solid #555;border-radius:8px;background:#292929;color:#eee;padding:8px}
+.ym-radio-status{grid-column:1/-1;color:#aaa;font-size:12px;padding:4px 0}
+@media(min-width:801px) and (max-width:1100px){.ym-volume{grid-column:1/-1;grid-row:3}}
+@media(max-width:800px){
+  .ym-player-area{position:relative;max-height:none;overflow:visible}
+  .ym-player{grid-template-columns:minmax(0,1fr);gap:4px;padding:8px 0}
+  .ym-now{grid-column:1;grid-row:1;gap:8px}
+  .ym-artwork{width:40px;height:40px}
+  .ym-now-copy{flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.7fr);align-items:center;gap:0 6px}
+  .ym-now-copy .ym-player-name{grid-column:1/-1}
+  .ym-now-copy>strong{margin:0;font-size:13px}
+  .ym-now-copy>.ym-muted{display:block;font-size:11px}
+  .ym-transport{display:contents}
+  .ym-controls{grid-column:1;grid-row:2;gap:16px;min-width:0}
+  .ym-controls [data-cmd=stop]{display:inline-grid}
+  .ym-controls button{flex:none}
+  .ym-timeline{grid-column:1;grid-row:3;height:44px}
+  .ym-volume{grid-column:1;grid-row:4;gap:8px;padding:0;border:0}
+  .ym-volume input{width:100%;min-width:0}
+  .ym-player-actions{grid-column:1;grid-row:5;justify-content:space-between;gap:4px}
+  .ym-action>span{max-width:180px}
+  .ym-input-source-button{min-height:48px}
+  .ym-wave-banner{flex-wrap:wrap}
+  .ym-wave-settings{align-items:stretch}
+}
 `;
 
 function stateLabel(state) { return ({playing:"\u0418\u0433\u0440\u0430\u0435\u0442",buffering:"\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430",paused:"\u041f\u0430\u0443\u0437\u0430",idle:"\u041d\u0435 \u0438\u0433\u0440\u0430\u0435\u0442",off:"\u0412\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u0430",unavailable:"\u041d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430",unknown:"\u041d\u0435\u0442 \u0441\u0432\u044f\u0437\u0438"})[state] || "\u0413\u043e\u0442\u043e\u0432\u0430"; }

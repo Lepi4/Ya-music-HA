@@ -15,6 +15,7 @@ from .const import (
     DOMAIN,
 )
 from .yandex import YandexMusicError, YandexMusicService, normalize_track
+from .radio import track_id
 
 _LOGGER = logging.getLogger(__name__)
 _VIEWS_REGISTERED = f"{DOMAIN}_views_registered"
@@ -86,6 +87,7 @@ def _players(hass: HomeAssistant, service: YandexMusicService) -> list[dict[str,
 
 def _playback(service: YandexMusicService) -> dict[str, Any]:
     return {
+        "radio": service.radio.snapshot(),
         "queue": service.playback.queue,
         "index": service.playback.index,
         "track": (
@@ -274,6 +276,63 @@ class WaveView(_BaseView):
             return self.error(err)
 
 
+class WaveSettingsView(_BaseView):
+    url = f"{API_PREFIX}/wave/settings"
+    name = f"api:{DOMAIN}:wave_settings"
+
+    async def get(self, request):
+        try:
+            return _json(await self.service(request).wave_settings())
+        except Exception as err:
+            return self.error(err)
+
+
+class RadioView(_BaseView):
+    url = f"{API_PREFIX}/radio"
+    name = f"api:{DOMAIN}:radio"
+
+    async def post(self, request):
+        try:
+            service = self.service(request)
+            body = await request.json()
+            entity_id = str(body.get("entity_id", ""))
+            available = {p["entity_id"] for p in _players(service.hass, service)
+                         if p["is_yandex_station"] and p["state"] not in ("unknown", "unavailable")}
+            if entity_id not in available:
+                return _json({"error": "Выберите доступную Яндекс-колонку"}, 400)
+            station = "user:onyourwave"
+            if body.get("by_current"):
+                state = service.hass.states.get(entity_id)
+                seed = track_id(state.attributes.get("media_content_id")) if state else ""
+                if not seed:
+                    return _json({"error": "У текущего трека нет идентификатора Яндекс Музыки"}, 400)
+                station = f"track:{seed}"
+            elif "mood_energy" in body:
+                await service.set_wave_mood(str(body["mood_energy"]))
+            await service.radio.start(entity_id, station)
+            return _json({"radio": service.radio.snapshot()})
+        except Exception as err:
+            return self.error(err)
+
+
+class RadioControlView(_BaseView):
+    url = f"{API_PREFIX}/radio/control"
+    name = f"api:{DOMAIN}:radio_control"
+
+    async def post(self, request):
+        try:
+            body = await request.json()
+            action = str(body.get("action", ""))
+            if action not in ("next", "previous", "stop", "detach", "select"):
+                return _json({"error": "Неизвестная команда волны"}, 400)
+            index = int(body.get("index", -1)) if action == "select" else None
+            service = self.service(request)
+            handled = await service.radio.control(str(body.get("entity_id", "")), action, index)
+            return _json({"handled": handled, "radio": service.radio.snapshot()})
+        except Exception as err:
+            return self.error(err)
+
+
 class ChartView(_BaseView):
     url = f"{API_PREFIX}/chart"
     name = f"api:{DOMAIN}:chart"
@@ -448,6 +507,9 @@ def register_views(hass: HomeAssistant, service: YandexMusicService) -> None:
         LikesView,
         SearchView,
         WaveView,
+        WaveSettingsView,
+        RadioView,
+        RadioControlView,
         ChartView,
         RecommendationsView,
         PodcastsView,
