@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from yandex_music import Client
 
 from .const import API_PREFIX, DATA_PLAY_KEY
+from .genres import genre_path
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -131,37 +132,6 @@ def _cover(track: Any, size: str = "400x400") -> str | None:
         return None
     value = str(value).replace("%%", size)
     return value if value.startswith("http") else "https://" + value
-
-
-def _micro_genre_parent(slug: str) -> str:
-    """Map API micro-genre slugs into a small stable top-level ladder."""
-    value = str(slug or "").lower().replace("_", "-")
-    rules = (
-        ("allrock", ("rock", "rnr", "new-wave", "post-rock", "stoner", "grunge", "shoegaze")),
-        ("metal", ("metal", "black", "death", "doom", "thrash", "grind", "core")),
-        ("electronics", ("electro", "electronic", "techno", "house", "trance", "dubstep", "dnb", "drum", "bass", "ambient", "synth")),
-        ("rap", ("rap", "hip-hop", "hiphop", "trap", "grime")),
-        ("pop", ("pop", "k-pop", "kpop", "hyperpop", "synthpop")),
-        ("jazz", ("jazz", "bebop", "swing")),
-        ("blues", ("blues",)),
-        ("rnb", ("rnb", "soul", "funk")),
-        ("classicalmusic", ("classical", "baroque", "opera", "symphony", "orchestra")),
-        ("folk", ("folk", "ethnic", "celtic", "bluegrass")),
-        ("country", ("country",)),
-        ("reggae", ("reggae", "dancehall", "ska")),
-        ("dance", ("dance", "disco", "edm")),
-        ("punk", ("punk",)),
-        ("indie", ("indie",)),
-        ("alternative", ("alternative",)),
-        ("estrada", ("estrada", "chanson")),
-        ("soundtrack", ("soundtrack", "film", "movie")),
-        ("children", ("children", "lullaby", "fairytale", "fairy-tale")),
-        ("bard", ("bard", "singer-songwriter")),
-    )
-    for parent, markers in rules:
-        if any(marker in value for marker in markers):
-            return parent
-    return "other"
 
 
 def normalize_track(track: Any) -> dict[str, Any] | None:
@@ -532,9 +502,9 @@ class YandexMusicService:
                 category = "genre"
             cover = getattr(station, "full_image_url", None) or getattr(station, "mts_full_image_url", None)
             parent_tag = str(getattr(parent, "tag", "") or "")
-            genre_parent = _micro_genre_parent(ident or "") if category == "genre" else ""
+            genre_parent, genre_family = genre_path(ident or "", str(title), parent_tag) if category == "genre" else ("", "")
             result.append({"seed": str(seed), "title": str(title), "description": str(description),
-                           "category": category, "parent": parent_tag, "genre_parent": genre_parent,
+                           "category": category, "parent": parent_tag, "genre_parent": genre_parent, "genre_family": genre_family,
                            "cover": _cover({"uri": cover}) if cover else None})
         return result
 

@@ -10,7 +10,7 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.4`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.5`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
@@ -23,6 +23,14 @@ const track = {id:'1',title:'Test song',artists:'Artist',duration:180};
 const selectedSources = new Map();
 const radioSessions = {};
 const sourceList = ['Station','media_player.shield','media_player.shield_3'];
+const waveStations = [
+  {seed:'activity:commute',category:'activity',title:'В дороге'},
+  {seed:'genre:allrock',category:'genre',genre_parent:'allrock',title:'Рок'},
+  {seed:'genre:blues',category:'genre',genre_parent:'blues',title:'Блюз'},
+  {seed:'genre:sport',category:'genre',genre_parent:'other',title:'Спортивная музыка'},
+  ...Array.from({length:41},(_,i)=>({seed:`micro-genre:rock-${i}`,category:'genre',genre_parent:'allrock',genre_family:i<20?'Классический рок':'Альтернативный рок',title:i===0?'Тяжёлый рок':`Рок-направление ${i}`})),
+  ...Array.from({length:65},(_,i)=>({seed:`genre:regional-${i}`,category:'genre',genre_parent:'ethnic',title:i===0?'Турецкая альтернатива':i===1?'Израильский рок':`Национальная музыка ${i}`})),
+];
 
 function remoteGet(path) {
   // The Supervisor credential stays on HA; never send it to this browser or log it.
@@ -66,7 +74,7 @@ try {
     if(path.endsWith('/status')) return {authorized:true,account:{login:'Test'},players,playback:{queue:[],index:-1}};
     if(path.endsWith('/players')) return {players,playback:{queue:[],index:-1,radio:radioSessions}};
     if(path.endsWith('/wave/settings')) return {mood_energy:'all',moods:[{value:'all',name:'Любое'},{value:'calm',name:'Спокойное из API'}]};
-    if(path.endsWith('/wave/stations')) return {stations:[{seed:'activity:commute',category:'activity',title:'В дороге',description:'Музыка для пути'},{seed:'genre:rock',category:'genre',title:'Рок',description:'Рок по версии Rotor'}]};
+    if(path.endsWith('/wave/stations')) return {stations:waveStations};
     if(path.endsWith('/playlists')) return {playlists:[{uid:'1',kind:'1',title:'Playlist',count:1}]};
     if(path.endsWith('/recommendations')) return {shelves:[{title:'An arbitrary title supplied by Yandex',items:[{type:'playlist',uid:'1',kind:'2',title:'Recommended playlist',count:2},{type:'album',id:'9',title:'Recommended album'}]}]};
     if(path.endsWith('/podcasts')) return {title:'Podcast catalog title from Yandex',items:[{type:'album',id:'12',title:'Podcast show'}]};
@@ -98,7 +106,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.3.4');
+  assert.equal(metrics.version,'0.3.5');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
@@ -219,7 +227,36 @@ try {
     await page.locator('[data-section="wave"]').click();
     await page.locator('#ym-wave-mood:not([disabled])').waitFor();
     await page.locator('#ym-wave-stations [data-wave-seed]').first().waitFor();
-    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]').count(),2);
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]').count(),waveStations.length);
+    assert.equal(await page.locator('[data-wave-group="genre:allrock"]').count(),1);
+    assert.equal(await page.locator('[data-wave-group="genre:ethnic"] [data-wave-seed]').count(),65);
+    const genreLabels=await page.locator('[data-wave-group^="genre:"] > summary').evaluateAll(nodes=>nodes.map(node=>node.firstChild.textContent.trim()));
+    assert.equal(genreLabels.filter(label=>label==='Рок').length,1);
+    assert.ok(genreLabels.includes('Блюз'));
+    assert.equal(new Set(genreLabels).size,genreLabels.length, 'Genre group labels must be unique');
+    assert.ok(genreLabels.every(label=>!/[·\d]/.test(label)));
+    const beforeGenreSearch=calls.filter(c=>c.path.includes('/search?')).length;
+    await page.locator('#ym-search').fill('турецкая');
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible').count(),1);
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible strong').textContent(),'Турецкая альтернатива');
+    await page.locator('#ym-search').press('Enter');
+    assert.equal(calls.filter(c=>c.path.includes('/search?')).length,beforeGenreSearch);
+    await page.locator('#ym-search').fill('ТЯЖЕЛЫЙ');
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible strong').textContent(),'Тяжёлый рок');
+    await page.locator('#ym-search').fill('этническая израильский');
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible').count(),1);
+    await page.locator('#ym-wave-stations [data-wave-seed]:visible').click();
+    await page.waitForTimeout(60);
+    assert.deepEqual(calls.findLast(c=>c.path.endsWith('/radio')).body,{entity_id:'media_player.two',by_current:false,mode:'seed',seed:'genre:regional-1'});
+    await page.locator('#ym-search').fill('НетТакогоЖанра');
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible').count(),0);
+    assert.equal(await page.locator('.ym-wave-search-empty:visible').count(),1);
+    await page.locator('#ym-search').fill('');
+    assert.equal(await page.locator('[data-wave-group="genre:allrock"]').getAttribute('open'),null);
+    await page.locator('[data-wave-group="genre:allrock"] > summary').click();
+    await page.locator('#ym-search').fill('турецкая');
+    await page.locator('#ym-search').fill('');
+    assert.notEqual(await page.locator('[data-wave-group="genre:allrock"]').getAttribute('open'),null);
     assert.equal(await page.locator('#ym-wave-mood option[value="calm"]').textContent(),'Спокойное из API');
     await page.locator('#ym-wave-mood').selectOption('calm');
     await page.locator('[data-action="mood-wave"]').click();
@@ -285,14 +322,40 @@ try {
     const original=el.api.bind(el);
     el.api=async path=>{
       if(path==='/likes'){await new Promise(r=>setTimeout(r,80));return {tracks:[{id:'slow',title:'Slow old result'}]};}
-      if(path==='/wave')return {tracks:[{id:'fast',title:'New wave result'}]};
       return original(path);
     };
     await Promise.all([el.loadSection('likes'),el.loadSection('wave')]);
     el.api=original;
   });
   assert.equal(await page.locator('#ym-heading').textContent(),'Моя волна');
-  assert.equal(await page.locator('.ym-track-main strong').textContent(),'New wave result');
+  assert.equal(await page.locator('#ym-content .ym-track').count(),0);
+  assert.equal(await page.locator('.ym-wave-banner').count(),1);
+  assert.ok(!calls.some(c=>c.path==='yandex_music_chaos/v1/wave'), 'The wave page must not request a five-track preview');
+  await page.locator('#ym-wave-stations [data-wave-seed]').first().waitFor({state:'attached',timeout:60000});
+  const genreGroups=page.locator('[data-wave-group^="genre:"]');
+  assert.ok(await genreGroups.count()<=30, 'Base genres must stay compact');
+  const genreRows=page.locator('[data-wave-group^="genre:"]:not([data-wave-group="genre:ethnic"]) .ym-wave-station-row');
+  for(const row of await genreRows.all()) assert.ok(await row.locator('[data-wave-seed]').count()<=30, 'Use semantic subfamilies for long branches');
+  if(!live) {
+    // Search typed before a slow catalog response must be applied on arrival.
+    await page.evaluate(()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      const original=el.api.bind(el);
+      el.api=async path=>{
+        if(path==='/wave/stations')await new Promise(resolve=>{el._releaseStations=resolve;});
+        return original(path);
+      };
+      el._pendingStations=el.loadWaveStations(el._sectionRevision).finally(()=>{el.api=original;});
+    });
+    await page.locator('#ym-search').fill('турецкая');
+    await page.evaluate(async()=>{const el=document.querySelector('yandex-music-chaos-panel');el._releaseStations();await el._pendingStations;});
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible').count(),1);
+    await page.setViewportSize({width:390,height:844});
+    await page.evaluate(()=>document.querySelector('#panel').style.left='0');
+    await page.locator('#ym-search').scrollIntoViewIfNeeded();
+    await page.screenshot({path:fileURLToPath(new URL('../artifacts/wave-search-mobile.png',import.meta.url)),fullPage:true});
+    await page.locator('#ym-search').fill('');
+  }
   for(const size of [{width:320,height:740},{width:390,height:844},{width:768,height:1024},{width:844,height:390}]) {
     await page.setViewportSize(size);
     await page.evaluate(()=>document.querySelector('#panel').style.left='0');
@@ -302,6 +365,11 @@ try {
     const [info, controls, timeline, volume, stop] = await Promise.all(['.ym-now','.ym-controls','.ym-timeline','.ym-volume','.ym-controls [data-cmd="stop"]'].map(s=>page.locator(s).boundingBox()));
     if(size.width<=800) assert.ok(info.y+info.height<=controls.y+1 && controls.y+controls.height<=timeline.y+1 && timeline.y+timeline.height<=volume.y+1);
     assert.ok(stop && stop.x>=controls.x && stop.x+stop.width<=size.width, 'Stop must stay in the controls row');
+    for(const action of ['track-wave','genre-wave']) {
+      const label=page.locator(`[data-action="${action}"] > span`);
+      assert.ok(await label.isVisible(), 'Mobile wave actions must keep their text');
+      assert.ok((await label.boundingBox()).width>50);
+    }
     await page.locator('#ym-volume').scrollIntoViewIfNeeded();
     const visibleVolume=await page.locator('#ym-volume').boundingBox();
     assert.ok(visibleVolume.y>=0 && visibleVolume.y+visibleVolume.height<=size.height);
