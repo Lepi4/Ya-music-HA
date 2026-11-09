@@ -14,3 +14,7 @@ External dependencies are not relicensed by this repository:
 Yandex Music content, names, covers, streams and trademarks belong to their
 respective rights holders and are not covered by this code license. They are
 loaded from the connected user's authorized service and not shipped in releases.
+
+The documentation screenshots illustrate the interface and may contain Yandex
+Music cover artwork. That artwork and other third-party visual content remain
+outside the original-code license.

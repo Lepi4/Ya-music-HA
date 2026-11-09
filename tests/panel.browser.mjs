@@ -437,5 +437,10 @@ try {
     await touchContext.close();
   }
   assert.deepEqual(errors,[]);
+  if(process.argv.includes('--docs')) {
+    assert.ok(live,'Use --live --docs to capture the current public catalog');
+    const { captureDocs } = await import('../scripts/capture_docs.mjs');
+    console.log(JSON.stringify({screenshots:await captureDocs(browser,source,remoteGet)}));
+  }
   console.log(JSON.stringify({live,requests:calls.length,stations:shownStations,mobileSizes:4,metrics,errors}));
 } finally {await browser.close();}
