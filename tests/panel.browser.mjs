@@ -10,7 +10,7 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.5`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.6`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
@@ -28,6 +28,11 @@ const waveStations = [
   {seed:'genre:allrock',category:'genre',genre_parent:'allrock',title:'Рок'},
   {seed:'genre:blues',category:'genre',genre_parent:'blues',title:'Блюз'},
   {seed:'genre:sport',category:'genre',genre_parent:'other',title:'Спортивная музыка'},
+  {seed:'local:test',category:'local',title:'Региональная волна'},
+  {seed:'tempo:fast',category:'tempo',title:'Быстрее'},
+  {seed:'mix:test',category:'mix',title:'Микс'},
+  {seed:'author:test',category:'author',title:'Исполнитель'},
+  {seed:'editorial:station-25',category:'editorial',title:'Узбекская народная музыка'},
   ...Array.from({length:41},(_,i)=>({seed:`micro-genre:rock-${i}`,category:'genre',genre_parent:'allrock',genre_family:i<20?'Классический рок':'Альтернативный рок',title:i===0?'Тяжёлый рок':`Рок-направление ${i}`})),
   ...Array.from({length:65},(_,i)=>({seed:`genre:regional-${i}`,category:'genre',genre_parent:'ethnic',title:i===0?'Турецкая альтернатива':i===1?'Израильский рок':`Национальная музыка ${i}`})),
 ];
@@ -106,7 +111,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.3.5');
+  assert.equal(metrics.version,'0.3.6');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
@@ -229,11 +234,16 @@ try {
     await page.locator('#ym-wave-stations [data-wave-seed]').first().waitFor();
     assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]').count(),waveStations.length);
     assert.equal(await page.locator('[data-wave-group="genre:allrock"]').count(),1);
-    assert.equal(await page.locator('[data-wave-group="genre:ethnic"] [data-wave-seed]').count(),65);
+    assert.equal(await page.locator('[data-wave-group="genre:ethnic"] [data-wave-seed]').count(),66);
     const genreLabels=await page.locator('[data-wave-group^="genre:"] > summary').evaluateAll(nodes=>nodes.map(node=>node.firstChild.textContent.trim()));
     assert.equal(genreLabels.filter(label=>label==='Рок').length,1);
     assert.ok(genreLabels.includes('Блюз'));
     assert.equal(new Set(genreLabels).size,genreLabels.length, 'Genre group labels must be unique');
+    const groupKeys=await page.locator('[data-wave-group]').evaluateAll(nodes=>nodes.map(node=>node.dataset.waveGroup));
+    assert.deepEqual(groupKeys.slice(-4),['local','tempo','mix','author']);
+    assert.equal(await page.locator('[data-wave-group="tempo"] [data-wave-seed="genre:sport"]').count(),1);
+    assert.equal(await page.locator('[data-wave-group="genre:other"]').count(),0);
+    assert.equal(await page.locator('[data-wave-group="genre:ethnic"] [data-wave-seed="editorial:station-25"]').count(),1);
     assert.ok(genreLabels.every(label=>!/[·\d]/.test(label)));
     const beforeGenreSearch=calls.filter(c=>c.path.includes('/search?')).length;
     await page.locator('#ym-search').fill('турецкая');
@@ -243,6 +253,8 @@ try {
     assert.equal(calls.filter(c=>c.path.includes('/search?')).length,beforeGenreSearch);
     await page.locator('#ym-search').fill('ТЯЖЕЛЫЙ');
     assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible strong').textContent(),'Тяжёлый рок');
+    await page.locator('#ym-search').fill('узбекская народная');
+    assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible').getAttribute('data-wave-seed'),'editorial:station-25');
     await page.locator('#ym-search').fill('этническая израильский');
     assert.equal(await page.locator('#ym-wave-stations [data-wave-seed]:visible').count(),1);
     await page.locator('#ym-wave-stations [data-wave-seed]:visible').click();
@@ -334,6 +346,11 @@ try {
   await page.locator('#ym-wave-stations [data-wave-seed]').first().waitFor({state:'attached',timeout:60000});
   const genreGroups=page.locator('[data-wave-group^="genre:"]');
   assert.ok(await genreGroups.count()<=30, 'Base genres must stay compact');
+  const categoryOrder=await page.locator('[data-wave-group]').evaluateAll(nodes=>nodes.map(node=>node.dataset.waveGroup));
+  const bottomCategories=['local','tempo','mix','author'].filter(key=>categoryOrder.includes(key));
+  assert.deepEqual(categoryOrder.slice(-bottomCategories.length),bottomCategories);
+  assert.equal(await page.locator('[data-wave-group="tempo"] [data-wave-seed="genre:sport"]').count(),1);
+  assert.equal(await page.locator('[data-wave-group="genre:ethnic"] [data-wave-seed="editorial:station-25"]').count(),1);
   const genreRows=page.locator('[data-wave-group^="genre:"]:not([data-wave-group="genre:ethnic"]) .ym-wave-station-row');
   for(const row of await genreRows.all()) assert.ok(await row.locator('[data-wave-seed]').count()<=30, 'Use semantic subfamilies for long branches');
   if(!live) {

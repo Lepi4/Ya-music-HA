@@ -46,7 +46,7 @@ GitVerse служит зеркалом исходного кода; HACS уст�
 
 ```sh
 curl -fL https://raw.githubusercontent.com/Lepi4/Ya-music-HA/main/scripts/install.py -o /tmp/install-ym.py
-python3 /tmp/install-ym.py --config /config --version v0.3.5
+python3 /tmp/install-ym.py --config /config --version v0.3.6
 ha core restart
 ```
 
@@ -62,12 +62,12 @@ ha core restart
 
 ```sh
 YM_SRC=$(mktemp -d)
-git clone --depth 1 --branch v0.3.5 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
-python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.3.5/yandex_music_chaos.zip"
+git clone --depth 1 --branch v0.3.6 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
+python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.3.6/yandex_music_chaos.zip"
 ha core restart
 ```
 
-Архивы в `release/0.3.5/` содержат ту же интеграцию, что GitHub Releases.
+Архивы в `release/0.3.6/` содержат ту же интеграцию, что GitHub Releases.
 Для GitVerse используется Git: анонимное скачивание ZIP через raw API может
 ограничиваться ответом HTTP 429.
 

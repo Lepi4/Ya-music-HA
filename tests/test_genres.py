@@ -21,6 +21,8 @@ class GenreTest(unittest.TestCase):
             ("kpop", "K-Pop", "pop"),
             ("unknown-national-genre", "Турецкий джаз", "jazz"),
             ("tatar", "Татарская музыка", "folk"),
+            ("uzbekfolk", "Узбекская народная музыка", "folk"),
+            ("uzfolk", "Узбекская народная", "folk"),
         ]:
             with self.subTest(slug=slug):
                 self.assertEqual(genres.genre_path(slug, title, parent), ("ethnic", ""))

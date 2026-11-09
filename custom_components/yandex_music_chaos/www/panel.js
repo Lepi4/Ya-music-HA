@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.3.5";
+const PANEL_VERSION = "0.3.6";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -685,15 +685,17 @@ class YandexMusicChaosPanel extends HTMLElement {
       const data = await this.api("/wave/stations");
       if (revision !== this._sectionRevision) return;
       const groups = new Map();
+      const groupOverrides = {"genre:sport":"tempo", "editorial:station-25":"genre:ethnic"};
       for (const station of data.stations || []) {
-        const key = station.category === "genre" ? `genre:${station.genre_parent || station.parent || "other"}` : (station.category || "other");
+        const key = groupOverrides[station.seed] || (station.category === "genre" ? `genre:${station.genre_parent || station.parent || "other"}` : (station.category || "other"));
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(station);
       }
       const labels = {user:"Для вас",personal:"Персональные",mood:"Под настроение",activity:"Занятия",era:"Эпохи",epoch:"Эпохи",language:"Язык",local:"Региональные",tempo:"Темп",mix:"Миксы",editorial:"Подборки",author:"Исполнители",other:"Другие волны"};
       const genreLabels = {other:"Другие жанры",allrock:"Рок",ethnic:"Этническая музыка",folk:"Фолк",pop:"Поп",metal:"Метал",electronics:"Электроника",rap:"Рэп",blues:"Блюз",jazz:"Джаз",classicalmusic:"Классика",estrada:"Эстрада и шансон",alternative:"Альтернатива",dance:"Танцевальная музыка",bard:"Авторская песня",country:"Кантри",indie:"Инди",punk:"Панк",rnb:"R&B, соул и фанк",reggae:"Регги и ска",soundtrack:"Музыка из фильмов",children:"Детская музыка и сказки",relax:"Спокойная музыка"};
-      const order = ["user","personal","mood","activity","era","epoch","language","local","tempo","mix","editorial","author","other"];
-      const groupOrder = key => key.startsWith("genre:") ? 50 : (order.indexOf(key)<0 ? 99 : order.indexOf(key));
+      const order = ["user","personal","mood","activity","era","epoch","language","editorial","other"];
+      const bottomOrder = ["local","tempo","mix","author"];
+      const groupOrder = key => bottomOrder.includes(key) ? 100+bottomOrder.indexOf(key) : key.startsWith("genre:") ? 50 : (order.indexOf(key)<0 ? 40 : order.indexOf(key));
       const groupLabel = key => key.startsWith("genre:") ? (genreLabels[key.slice(6)] || "Другие жанры") : (labels[key] || "Другие волны");
       const row = (stations, path) => `<div class="ym-wave-station-row">${stations.map(station => `<button class="ym-wave-station" data-wave-seed="${escapeHtml(station.seed)}" data-wave-search="${escapeHtml(`${path} ${station.title}`)}" title="${escapeHtml(station.title)}"><span>${station.cover ? `<img src="${escapeHtml(station.cover)}" alt="" loading="lazy">` : "◉"}</span><strong>${escapeHtml(station.title)}</strong></button>`).join("")}</div>`;
       const sorted = [...groups].sort(([a],[b]) => groupOrder(a)-groupOrder(b) || groupLabel(a).localeCompare(groupLabel(b),"ru"));
