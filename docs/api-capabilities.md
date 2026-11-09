@@ -1,8 +1,5 @@
 # Обзор Yandex Music API
 
-Полный отдельный аудит Rotor и «Моей волны», включая второй session-уровень:
-[my-wave-api-audit-2026-11-09.md](my-wave-api-audit-2026-11-09.md).
-
 Дополнение 2026-11-09 / 0.3.2: подключены `rotor_station_info`,
 `rotor_station_settings2`, `rotor_station_feedback` и продолжение
 `rotor_station_tracks(queue=...)`. Настроения берутся из `restrictions2`,
