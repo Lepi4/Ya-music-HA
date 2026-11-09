@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.3.3";
+const PANEL_VERSION = "0.3.4";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -661,13 +661,25 @@ class YandexMusicChaosPanel extends HTMLElement {
       if (revision !== this._sectionRevision) return;
       const groups = new Map();
       for (const station of data.stations || []) {
-        const key = station.category || "other";
+        const key = station.category === "genre" ? `genre:${station.genre_parent || station.parent || "other"}` : (station.category || "other");
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(station);
       }
-      const labels = {user:"Для вас",personal:"Персональные",mood:"Под настроение",activity:"Занятия",genre:"Жанры",era:"Эпохи",language:"Язык",local:"Региональные",tempo:"Темп",mix:"Миксы",editorial:"Подборки",author:"Исполнители",other:"Другие волны"};
-      const order = ["user","personal","mood","activity","genre","era","language","local","tempo","mix","editorial","author","other"];
-      const html = [...groups].sort(([a],[b]) => (order.indexOf(a)<0?99:order.indexOf(a))-(order.indexOf(b)<0?99:order.indexOf(b))).map(([key, stations], groupIndex) => `<details class="ym-wave-station-group" ${groupIndex < 4 ? "open" : ""}><summary>${escapeHtml(labels[key] || "Другие волны")} <small>${stations.length}</small></summary><div class="ym-wave-station-row">${stations.slice(0,30).map(station => `<button class="ym-wave-station" data-wave-seed="${escapeHtml(station.seed)}" title="${escapeHtml(station.title)}"><span>${station.cover ? `<img src="${escapeHtml(station.cover)}" alt="" loading="lazy">` : "◉"}</span><strong>${escapeHtml(station.title)}</strong></button>`).join("")}</div>${stations.length > 30 ? `<p class="ym-muted ym-wave-group-note">Показаны первые 30 из ${stations.length}. Остальные доступны в каталоге Яндекса.</p>` : ""}</details>`).join("");
+      const labels = {user:"Для вас",personal:"Персональные",mood:"Под настроение",activity:"Занятия",era:"Эпохи",language:"Язык",local:"Региональные",tempo:"Темп",mix:"Миксы",editorial:"Подборки",author:"Исполнители",other:"Другие волны"};
+      const genreLabels = {other:"Основные жанры",allrock:"Рок",folk:"Фолк",pop:"Поп",metal:"Метал",electronics:"Электроника",rap:"Рэп",jazz:"Джаз",classicalmusic:"Классика",estrada:"Эстрада",alternative:"Альтернатива",dance:"Танцевальная музыка",bard:"Авторская песня",country:"Кантри",indie:"Инди",punk:"Панк",rnb:"R&B",reggae:"Регги",soundtrack:"Музыка из фильмов",forchildren:"Детская музыка",other_sport:"Спорт"};
+      const order = ["user","personal","mood","activity","era","language","local","tempo","mix","editorial","author","other"];
+      const groupOrder = key => key.startsWith("genre:") ? 50 : (order.indexOf(key)<0 ? 99 : order.indexOf(key));
+      const groupLabel = key => key.startsWith("genre:") ? (genreLabels[key.slice(6)] || "Другие жанры") : (labels[key] || "Другие волны");
+      const renderGroups = [];
+      for (const [key, stations] of [...groups].sort(([a],[b]) => groupOrder(a)-groupOrder(b))) {
+        if (!key.startsWith("genre:") || stations.length <= 30) {
+          renderGroups.push({key, label:groupLabel(key), stations, total:stations.length});
+          continue;
+        }
+        const ordered = [...stations].sort((a,b) => Number(b.seed.startsWith("genre:")) - Number(a.seed.startsWith("genre:")) || a.title.localeCompare(b.title));
+        for (let i=0; i<ordered.length; i+=30) renderGroups.push({key:`${key}:${i/30}`, label:`${groupLabel(key)} · ${Math.floor(i/30)+1}`, stations:ordered.slice(i,i+30), total:ordered.length});
+      }
+      const html = renderGroups.map((group, groupIndex) => `<details class="ym-wave-station-group" ${groupIndex < 4 ? "open" : ""}><summary>${escapeHtml(group.label)} <small>${group.stations.length}${group.total>group.stations.length ? ` из ${group.total}` : ""}</small></summary><div class="ym-wave-station-row">${group.stations.map(station => `<button class="ym-wave-station" data-wave-seed="${escapeHtml(station.seed)}" title="${escapeHtml(station.title)}"><span>${station.cover ? `<img src="${escapeHtml(station.cover)}" alt="" loading="lazy">` : "◉"}</span><strong>${escapeHtml(station.title)}</strong></button>`).join("")}</div></details>`).join("");
       this.querySelector("#ym-wave-stations").innerHTML = html || '<p class="ym-empty">Яндекс не вернул тематические волны для этого аккаунта.</p>';
     } catch (error) {
       if (revision === this._sectionRevision) this.querySelector("#ym-wave-stations").innerHTML = '<p class="ym-muted">Каталог тематических волн временно недоступен. Общую волну можно запустить кнопкой «Слушать».</p>';
@@ -811,7 +823,7 @@ const CSS = `
   .ym-input-source-button{min-height:48px}
   .ym-wave-banner{flex-wrap:wrap}
   .ym-wave-settings{align-items:stretch}
-  .ym-wave-action>span{display:none}.ym-wave-action{padding:4px;min-width:44px}.ym-wave-station-row .ym-wave-station{flex-basis:150px}
+  .ym-wave-actions{gap:6px}.ym-wave-actions .ym-wave-action{flex:1;min-width:0;padding:6px 8px;justify-content:center;font-size:12px}.ym-wave-action>span{display:inline;max-width:none}.ym-wave-station-row .ym-wave-station{flex-basis:150px}
   .ym-wave-actions{grid-column:1;grid-row:5;justify-content:flex-start}.ym-player-actions{grid-row:6}
 }
 `;

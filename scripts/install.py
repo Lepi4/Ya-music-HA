@@ -10,7 +10,7 @@ import zipfile
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--config", required=True, help="HA configuration directory, e.g. /config")
-parser.add_argument("--version", default="v0.3.3")
+parser.add_argument("--version", default="v0.3.4")
 parser.add_argument("--archive-url", help="Override the release archive URL")
 args = parser.parse_args()
 config = Path(args.config).expanduser().resolve(strict=True)

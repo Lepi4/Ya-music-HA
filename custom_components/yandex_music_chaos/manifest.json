@@ -1,7 +1,7 @@
 {
   "domain": "yandex_music_chaos",
   "name": "ЯМ-ХАОС",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "documentation": "https://github.com/Lepi4/Ya-music-HA",
   "issue_tracker": "https://github.com/Lepi4/Ya-music-HA/issues",
   "codeowners": ["@Lepi4"],
