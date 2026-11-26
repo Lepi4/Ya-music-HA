@@ -24,6 +24,7 @@ from .const import (
 )
 from .yandex import YandexMusicService
 from .radio import RadioController
+from .outputs import DirectOutputs
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[str] = []
@@ -40,9 +41,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     service = YandexMusicService(hass, source_entity)
     service.radio = RadioController(service)
+    service.outputs = DirectOutputs(service)
     entry.async_on_unload(hass.bus.async_listen(EVENT_STATE_CHANGED, service.radio.handle_event))
+    entry.async_on_unload(hass.bus.async_listen(EVENT_STATE_CHANGED, service.outputs.handle_event))
     entry.async_on_unload(async_track_time_interval(hass, service.radio.retry_waiting, timedelta(seconds=10)))
     entry.async_on_unload(service.radio.close)
+    entry.async_on_unload(service.outputs.close)
     hass.data[DOMAIN] = service
     hass.data[DATA_SERVICE] = service
 
@@ -69,7 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "_panel_custom": {
                 "name": "yandex-music-chaos-panel",
                 "embed_iframe": False,
-                "module_url": f"{STATIC_PREFIX}/panel.js?v=0.3.6",
+                "module_url": f"{STATIC_PREFIX}/panel.js?v=0.4.0",
             },
             "entry_id": entry.entry_id,
         },

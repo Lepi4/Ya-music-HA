@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.3.6";
+const PANEL_VERSION = "0.4.0";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -81,7 +81,7 @@ class YandexMusicChaosPanel extends HTMLElement {
 </div>
 <dialog id="ym-sources-dialog" class="ym-dialog" aria-labelledby="ym-sources-title"><div class="ym-dialog-head"><h2 id="ym-sources-title">Куда воспроизводить</h2><button class="ym-icon-button" data-action="close-dialog" aria-label="Закрыть">×</button></div><p class="ym-muted">Выберите одну или несколько Яндекс-колонок.</p><div id="ym-source-options"></div><p id="ym-sources-error" class="ym-inline-error" role="alert"></p><div class="ym-dialog-buttons"><button class="ym-secondary" data-action="apply-sources">Выбрать для новой музыки</button><button class="ym-primary" data-action="send-current">Отправить текущий трек</button></div></dialog>
 <dialog id="ym-queue-dialog" class="ym-dialog" aria-labelledby="ym-queue-title"><div class="ym-dialog-head"><h2 id="ym-queue-title">Очередь</h2><button class="ym-icon-button" data-action="close-dialog" aria-label="Закрыть">×</button></div><div id="ym-queue-content"></div></dialog>
-<dialog id="ym-input-source-dialog" class="ym-dialog" aria-labelledby="ym-input-source-title"><div class="ym-dialog-head"><h2 id="ym-input-source-title">Источник воспроизведения</h2><button class="ym-icon-button" data-action="close-dialog" aria-label="Закрыть">×</button></div><p id="ym-input-source-station" class="ym-muted"></p><div id="ym-input-source-options"></div><p id="ym-input-source-error" class="ym-inline-error" role="alert"></p></dialog>
+<dialog id="ym-input-source-dialog" class="ym-dialog" aria-labelledby="ym-input-source-title"><div class="ym-dialog-head"><h2 id="ym-input-source-title">Источник воспроизведения</h2><button class="ym-icon-button" data-action="close-dialog" aria-label="Закрыть">×</button></div><p id="ym-input-source-station" class="ym-muted"></p><label class="ym-source-option"><input id="ym-direct-output" type="checkbox"><span><strong>Прямое воспроизведение на внешний source</strong><small>Без обрезания по таймеру Станции. Перед включением остановите музыку на Станции и получателе. Режим действует до перезапуска HA.</small></span></label><div id="ym-input-source-options"></div><p id="ym-input-source-error" class="ym-inline-error" role="alert"></p></dialog>
 `;
     this.shadowRoot.addEventListener("click", (event) => this.onClick(event));
     this.shadowRoot.addEventListener("pointerdown", event => {
@@ -139,7 +139,14 @@ class YandexMusicChaosPanel extends HTMLElement {
 
   syncPlayerStates() {
     this._players = (this._players || []).map((player) => {
-      const state = this.hass?.states?.[player.entity_id];
+      const state = this.hass?.states?.[player.output_entity || player.entity_id];
+      if (player.direct_output) {
+        if (!state) return player;
+        const a = state.attributes;
+        const elapsed = state.state === 'playing' && a.media_position_updated_at ? Math.max(0,(Date.now()-Date.parse(a.media_position_updated_at))/1000) : 0;
+        return {...player, state:state.state, volume:a.volume_level, muted:a.is_volume_muted,
+          position:Number(a.media_position || 0)+(Number.isFinite(elapsed) ? elapsed : 0), duration:a.media_duration || player.duration};
+      }
       if (!state) return {...player, ...this._sourceInfo.get(player.entity_id)};
       const a = state.attributes;
       return {...player, state: state.state, title: a.media_title,
@@ -501,11 +508,11 @@ class YandexMusicChaosPanel extends HTMLElement {
     this.querySelector('[data-action="genre-wave"]').disabled = disabled || !hasTrackId || this._radioBusy;
     const radio = this._radioSessions[player?.entity_id];
     const radioStatus = this.querySelector("#ym-radio-status");
-    radioStatus.hidden = !radio;
-    radioStatus.textContent = radio ? radio.error || radio.feedback_error || (radio.station.startsWith("track:") ? "Волна по треку · очередь продолжает Home Assistant" : "Моя волна · очередь продолжает Home Assistant") : "";
+    radioStatus.hidden = !radio && !player?.output_error;
+    radioStatus.textContent = player?.output_error || (radio ? radio.error || radio.feedback_error || (radio.station.startsWith("track:") ? "Волна по треку · очередь продолжает Home Assistant" : "Моя волна · очередь продолжает Home Assistant") : "");
     const sourceButton = this.querySelector('[data-action="input-source"]');
     sourceButton.disabled = disabled || this._inputSourceBusy;
-    this.querySelector("#ym-input-source-name").textContent = this.sourceName(player?.input_source) || (player?.source_list ? "Не выбран" : "Загрузка…");
+    this.querySelector("#ym-input-source-name").textContent = (this.sourceName(player?.input_source) || (player?.source_list ? "Не выбран" : "Загрузка…")) + (player?.direct_output ? " · напрямую" : "");
   }
 
   sourceName(source) {
@@ -516,6 +523,7 @@ class YandexMusicChaosPanel extends HTMLElement {
 
   async hydrateSource(id, force = false) {
     if (!id) return;
+    if (this._players.find(p=>p.entity_id===id)?.direct_output) return;
     const state = (!force && this.hass?.states?.[id]) || await this.hass.callApi("GET", `states/${id}`);
     const a = state.attributes || {};
     const info = {input_source:a.source, source_list:Array.isArray(a.source_list) ? a.source_list : []};
@@ -535,21 +543,40 @@ class YandexMusicChaosPanel extends HTMLElement {
       await this.hydrateSource(id);
       if (id !== this._selectedPlayerId) return;
       const player = this.activePlayer();
-      this.querySelector("#ym-input-source-options").innerHTML = player.source_list?.length ? player.source_list.map(source => `<button class="ym-input-source-option ${source === player.input_source ? "active" : ""}" data-input-source="${escapeHtml(source)}" aria-pressed="${source === player.input_source}"><span>⇄</span><span>${escapeHtml(this.sourceName(source))}</span><strong>${source === player.input_source ? "✓" : ""}</strong></button>`).join("") : '<p class="ym-muted">Колонка не предоставляет список source. Настройте источники в интеграции Yandex Station.</p>';
+      this.querySelector('#ym-direct-output').checked = !!player.direct_output;
+      const data = await this.api(`/outputs?station=${encodeURIComponent(id)}`);
+      if (id !== this._selectedPlayerId) return;
+      this._directChoices = (data.sources || []).map(item=>item.source);
+      this._nativeChoices = data.native_sources || player.source_list || [];
+      this.renderInputSources();
     } catch (error) { this.querySelector("#ym-input-source-error").textContent = error.message || error.error || "Не удалось загрузить источники"; }
+  }
+
+  renderInputSources() {
+    const player = this.activePlayer();
+    const sources = this.querySelector('#ym-direct-output').checked ? this._directChoices : this._nativeChoices;
+    this.querySelector("#ym-input-source-options").innerHTML = sources?.length ? sources.map(source => `<button class="ym-input-source-option ${source === player.input_source ? "active" : ""}" data-input-source="${escapeHtml(source)}" aria-pressed="${source === player.input_source}"><span>⇄</span><span>${escapeHtml(this.sourceName(source))}</span><strong>${source === player.input_source ? "✓" : ""}</strong></button>`).join("") : '<p class="ym-muted">Доступных источников для этого режима нет.</p>';
   }
 
   async selectInputSource(source) {
     if (this._inputSourceBusy || this._inputSourceContext !== this._selectedPlayerId) return;
     const id = this._selectedPlayerId;
-    if (!this.activePlayer()?.source_list?.includes(source)) return;
+    const direct = this.querySelector('#ym-direct-output').checked;
+    if (!(direct ? this._directChoices : this._nativeChoices)?.includes(source)) return;
     this._inputSourceBusy = true;
     this.querySelectorAll("[data-input-source]").forEach(button => { button.disabled = true; });
     this.updateNowPlaying();
     try {
-      if (this._radioSessions[id]) await this.radioControl("detach", id);
-      await this.media("select_source", {entity_id:[id], source});
-      await this.hydrateSource(id, true);
+      if (this.querySelector('#ym-direct-output').checked || this.activePlayer()?.direct_output) {
+        const data = await this.api('/outputs', {method:'POST',body:{entity_id:id,source,direct:this.querySelector('#ym-direct-output').checked}});
+        this._players = data.players;
+        this._sourceInfo.delete(id);
+        await this.refreshPlayers();
+      } else {
+        if (this._radioSessions[id]) await this.radioControl("detach", id);
+        await this.media("select_source", {entity_id:[id], source});
+        await this.hydrateSource(id, true);
+      }
       this.querySelector("#ym-input-source-dialog").close();
       this.notice(`Источник: ${this.sourceName(source)}`);
     } catch (error) { this.querySelector("#ym-input-source-error").textContent = error.body?.message || error.message || error.error || "Не удалось сменить источник"; }
@@ -572,8 +599,12 @@ class YandexMusicChaosPanel extends HTMLElement {
     this.clearError();
     try {
       for (const id of allowed) if (this._radioSessions[id]) await this.radioControl("detach", id);
-      // Native Yandex playMusic uses the Yandex stream and speaker metadata.
-      await this.media("play_media", {entity_id:allowed, media_content_id:String(tracks[index].id), media_content_type:"track"});
+      if (allowed.some(id=>this._players.find(p=>p.entity_id===id)?.direct_output)) {
+        await this.api('/playback',{method:'POST',body:{targets:allowed,queue:tracks,index}});
+      } else {
+        // Native playback remains unchanged when direct output is not selected.
+        await this.media("play_media", {entity_id:allowed, media_content_id:String(tracks[index].id), media_content_type:"track"});
+      }
       allowed.forEach(id => {
         this._stationQueues.set(id, {tracks, index});
         this._stationTargets.set(id, [...allowed]);
@@ -590,6 +621,12 @@ class YandexMusicChaosPanel extends HTMLElement {
     if (!player || ["unavailable", "unknown"].includes(player.state)) return;
     this.clearError();
     try {
+      if (player.direct_output) {
+        await this.api('/outputs/command',{method:'POST',body:{entity_id:player.entity_id,action,
+          ...extra,muted:!player.muted}});
+        await this.refreshPlayers();
+        return;
+      }
       if (this._radioSessions[player.entity_id]?.active && ["next", "previous", "stop"].includes(action)) {
         await this.radioControl(action, player.entity_id);
         await this.refreshPlayers();
@@ -634,7 +671,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     try {
       if (sendCurrent) {
         const player = this.activePlayer();
-        const state = this.hass?.states?.[player.entity_id] || await this.hass.callApi("GET", `states/${player.entity_id}`);
+        const state = player.direct_output ? null : this.hass?.states?.[player.entity_id] || await this.hass.callApi("GET", `states/${player.entity_id}`);
         const id = String(state?.attributes?.media_content_id || player.media_id || "");
         const match = id.match(/(?:^|\/track\/)(\d+)(?=$|[?:/])/);
         if (!match) throw new Error("У текущего трека нет идентификатора Яндекс Музыки. Выберите трек в библиотеке.");
@@ -757,6 +794,7 @@ class YandexMusicChaosPanel extends HTMLElement {
   }
 
   onChange(event) {
+    if (event.target.id === 'ym-direct-output') this.renderInputSources();
     if (event.target.id === "ym-volume") this.command("volume_set", {level:Number(event.target.value)});
     if (event.target.id === "ym-seek" && !event.target.disabled) this.command("seek", {position:Number(event.target.value)});
   }
@@ -818,7 +856,7 @@ const CSS = `
 .ym-workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-width:0;min-height:0}.ym-player-area{padding:16px 24px 0;background:#202020;border-bottom:1px solid #363636;min-width:0;max-height:52vh;overflow:auto}.ym-stations-heading{display:flex;align-items:center;gap:16px;margin-bottom:10px}.ym-stations-heading h2{font-size:15px}.ym-stations-heading>span{font-size:12px;color:#999}.ym-stations{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 8px;scrollbar-width:thin;scroll-snap-type:x proximity}.ym-station{display:flex;align-items:center;gap:10px;flex:1 0 180px;max-width:330px;min-width:0;min-height:64px;border:1px solid #404040;border-radius:9px;background:#292929;padding:10px 12px;text-align:left;scroll-snap-align:start}.ym-station.selected{border-color:var(--ym-primary);background:#03a9f412}.ym-speaker-icon{font-size:27px;color:#aaa}.ym-station.selected .ym-speaker-icon,.ym-selected-mark{color:var(--ym-primary)}.ym-station-copy{flex:1;min-width:0}.ym-station-copy strong,.ym-station-copy small{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ym-station-copy small{font-size:11px;color:#aaa;margin-top:4px}.ym-station-copy i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#777;margin-right:5px}.ym-station.playing .ym-station-copy i{background:#4caf50}.ym-station.playing{box-shadow:inset 0 3px #4caf50}
 .ym-player{display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto;gap:8px 18px;padding:12px 0 10px}.ym-now{display:flex;align-items:center;gap:12px;min-width:0}.ym-artwork{position:relative;width:64px;height:64px;flex:none;background:#333;border-radius:7px;display:grid;place-items:center;color:#999;font-size:30px;overflow:hidden}.ym-artwork img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}.ym-now-copy{min-width:0}.ym-now-copy>span,.ym-now-copy>strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ym-now-copy>strong{font-size:16px;margin:2px 0}.ym-now-copy>.ym-muted{font-size:12px}.ym-player-name{font-size:11px;color:#29b6f6}.ym-transport{min-width:0;align-self:center}.ym-controls{display:flex;align-items:center;justify-content:center;gap:6px}.ym-controls button,.ym-icon-button{border:0;background:transparent;width:44px;height:44px;min-width:44px;display:inline-grid;place-items:center;border-radius:50%;font-size:20px}.ym-controls button:hover,.ym-icon-button:hover{background:#ffffff12}.ym-controls .ym-play{background:var(--ym-primary);color:#fff;width:48px;height:48px;font-size:23px}.ym-icon-button.active{color:#29b6f6;background:#03a9f420}.ym-timeline{display:flex;align-items:center;gap:8px;color:#aaa;font-size:10px;height:32px}.ym-timeline input{flex:1;min-width:0;width:100%;margin:0}.ym-timeline span{font-variant-numeric:tabular-nums}.ym-player-actions{display:flex;align-items:center;gap:4px}.ym-action{display:flex;align-items:center;gap:8px;text-align:left;min-height:48px;border:0;background:transparent;border-radius:7px;padding:6px 8px;color:#ddd}.ym-action:hover{background:#ffffff0b}.ym-action>span{font-size:12px;max-width:180px}.ym-action small{display:block;color:#29b6f6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;font-size:11px}.ym-volume{grid-column:1/-1;display:flex;align-items:center;gap:8px;border-top:1px solid #ffffff09;padding-top:2px;min-width:0}.ym-volume label{font-size:11px;color:#aaa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}.ym-volume input{width:180px;min-width:80px;margin:0}.ym-mobile-stop{display:none}.ym-volume output{font-size:11px;color:#aaa;width:36px;font-variant-numeric:tabular-nums}
 .ym-main{min-height:0;overflow:auto;overscroll-behavior:contain;padding:24px;min-width:0}.ym-header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:24px}.ym-search{display:flex;align-items:center;gap:8px;background:#292929;border:1px solid #404040;border-radius:8px;min-width:220px;max-width:440px;flex:1;padding-left:12px}.ym-search>span{font-size:24px;color:#aaa}.ym-search input{width:100%;min-width:0;min-height:44px;border:0;background:transparent;color:#eee;outline:none;font-size:14px}.ym-search button{align-self:stretch;border:0;border-left:1px solid #404040;background:transparent;padding:0 12px;color:#29b6f6;border-radius:0 7px 7px 0}.ym-error{padding:12px 16px;background:#572326;color:#ffcdd2;border-radius:7px;margin-bottom:16px}.ym-notice{padding:10px 14px;background:#03a9f415;color:#81d4fa;border-radius:7px;margin-bottom:12px}.ym-loading,.ym-empty{padding:24px;color:#aaa;text-align:center}.ym-wave-banner{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px;border-radius:10px;background:linear-gradient(120deg,#0d4770,#283457);margin-bottom:28px}.ym-wave-banner p{color:#b4cddd;font-size:13px;margin-top:4px}.ym-primary,.ym-secondary{min-height:44px;min-width:44px;border:0;border-radius:22px;padding:10px 20px;background:var(--ym-primary);color:#fff;font-weight:500}.ym-secondary{background:#393939}.ym-primary:hover{filter:brightness(1.1)}.ym-shelf{margin-bottom:28px}.ym-section-head{display:flex;align-items:center;justify-content:space-between;margin:20px 0 14px;gap:12px}.ym-link{background:transparent;border:0;color:#29b6f6;min-height:44px}.ym-card-row{display:grid;grid-auto-flow:column;grid-auto-columns:160px;gap:16px;overflow:auto;scroll-snap-type:x proximity;scrollbar-width:thin;padding-bottom:8px}.ym-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:20px}.ym-card{background:transparent;border:0;padding:0;text-align:left;min-width:0;scroll-snap-align:start}.ym-card-art{aspect-ratio:1;position:relative;overflow:hidden;border-radius:8px;background:linear-gradient(135deg,#315975,#364053);display:grid;place-items:center;font-size:48px;color:#a5c7df}.ym-card-art img{width:100%;height:100%;object-fit:cover}.ym-card>strong{display:block;font-size:14px;margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ym-card>small{display:block;color:#999;margin-top:3px;font-size:12px}.ym-card-play{position:absolute;bottom:10px;right:10px;background:var(--ym-primary);color:#fff;border-radius:50%;width:40px;height:40px;font-size:18px;display:grid;place-items:center;opacity:0;transition:opacity .15s}.ym-card:hover .ym-card-play,.ym-card:focus-visible .ym-card-play{opacity:1}.ym-list-toolbar{display:flex;align-items:center;justify-content:space-between;margin:0 0 16px;color:#999}.ym-track{display:grid;grid-template-columns:28px 44px minmax(0,1fr) 44px 24px;align-items:center;gap:12px;width:100%;min-height:60px;background:transparent;border:0;border-bottom:1px solid #ffffff06;border-radius:5px;padding:6px;text-align:left}.ym-track:hover{background:#ffffff09}.ym-track-number,.ym-track-time{font-size:12px;color:#999}.ym-track-art{width:44px;height:44px;background:#333;border-radius:4px;overflow:hidden;display:grid;place-items:center;color:#888}.ym-track-art img{width:100%;height:100%;object-fit:cover}.ym-track-main{min-width:0}.ym-track-main strong,.ym-track-main small{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ym-track-main small{font-size:12px;color:#999;margin-top:3px}.ym-track-play{color:var(--ym-primary);opacity:0}.ym-track:hover .ym-track-play{opacity:1}
-.ym-dialog{color:#eee;background:#272727;border:1px solid #444;border-radius:14px;padding:22px;width:min(460px,calc(100% - 24px));max-height:85dvh;overflow:auto;overscroll-behavior:contain;box-shadow:0 16px 80px #0008}.ym-dialog::backdrop{background:#0009}.ym-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.ym-dialog>p{font-size:13px;margin:10px 0 16px}.ym-source-option{display:flex;align-items:center;gap:12px;min-height:70px;padding:10px 4px;border-bottom:1px solid #3c3c3c;cursor:pointer}.ym-source-option>span{min-width:0}.ym-source-option strong,.ym-source-option small{display:block}.ym-source-option small{color:#999;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:310px}.ym-inline-error{color:#ef9a9a}.ym-dialog-buttons{display:flex;flex-direction:column;gap:10px;margin-top:20px}.ym-queue-item{display:flex;align-items:center;gap:12px;background:transparent;border:0;border-bottom:1px solid #333;width:100%;min-height:60px;text-align:left;padding:8px}.ym-queue-item.active{color:#29b6f6}.ym-queue-item small{display:block;color:#999;font-size:12px}
+.ym-dialog{color:#eee;background:#272727;border:1px solid #444;border-radius:14px;padding:22px;width:min(460px,calc(100% - 24px));max-height:85dvh;overflow:auto;overscroll-behavior:contain;box-shadow:0 16px 80px #0008}.ym-dialog::backdrop{background:#0009}.ym-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.ym-dialog>p{font-size:13px;margin:10px 0 16px}.ym-source-option{display:flex;align-items:center;gap:12px;min-height:70px;padding:10px 4px;border-bottom:1px solid #3c3c3c;cursor:pointer}.ym-source-option>span{min-width:0}.ym-source-option strong,.ym-source-option small{display:block}.ym-source-option small{color:#999;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:310px}#ym-input-source-dialog .ym-source-option small{white-space:normal;overflow:visible;text-overflow:clip;max-width:none;line-height:1.4}#ym-input-source-dialog .ym-source-option strong{font-size:14px}.ym-inline-error{color:#ef9a9a}.ym-dialog-buttons{display:flex;flex-direction:column;gap:10px;margin-top:20px}.ym-queue-item{display:flex;align-items:center;gap:12px;background:transparent;border:0;border-bottom:1px solid #333;width:100%;min-height:60px;text-align:left;padding:8px}.ym-queue-item.active{color:#29b6f6}.ym-queue-item small{display:block;color:#999;font-size:12px}
 @media(max-width:1100px){.ym-shell{grid-template-columns:190px minmax(0,1fr)}.ym-player{grid-template-columns:minmax(160px,1fr) auto}.ym-player-actions{grid-column:1;grid-row:2}.ym-volume{grid-column:2;grid-row:2;border:0;padding:0}.ym-volume label{display:none}.ym-volume input{width:110px}.ym-player-area{padding:12px 18px 0}.ym-main{padding:20px}}
 @media(max-width:800px){.ym-shell{grid-template-columns:1fr;grid-template-rows:56px minmax(0,1fr)}.ym-sidebar{padding:4px 8px;flex-direction:row;align-items:center;gap:4px;overflow:auto;border:0;border-bottom:1px solid #333;scrollbar-width:none}.ym-brand{padding:0;margin-right:6px}.ym-brand>span:last-child,.ym-nav-caption,.ym-account{display:none}.ym-brand-mark{width:30px;height:30px}.ym-nav{min-height:44px;flex:none;padding:6px 10px;white-space:nowrap;gap:7px;font-size:13px}.ym-nav>span{font-size:19px;width:20px}.ym-workspace{grid-row:2}.ym-player-area{padding:10px 12px 0;max-height:52dvh}.ym-stations-heading{margin-bottom:6px}.ym-stations-heading>span{display:none}.ym-station{flex:0 0 180px;min-height:58px;padding:8px 10px}.ym-station-copy strong{font-size:13px}.ym-player{gap:2px 8px;padding-top:8px;grid-template-columns:minmax(0,1fr) auto}.ym-now{gap:9px}.ym-artwork{width:48px;height:48px}.ym-now-copy>strong{font-size:14px}.ym-now-copy>.ym-muted{font-size:11px}.ym-controls{gap:0}.ym-controls button{width:44px;height:44px;min-width:44px;font-size:18px}.ym-controls [data-cmd=stop]{display:none}.ym-mobile-stop{display:inline-grid}.ym-controls .ym-play{width:46px;height:46px}.ym-transport{display:contents}.ym-timeline{grid-column:1/-1;grid-row:2;height:28px}.ym-player-actions{grid-column:1;grid-row:4}.ym-action{min-height:44px;padding:4px;font-size:16px}.ym-action>span{font-size:11px;max-width:190px}.ym-action small{max-width:180px}.ym-volume{grid-column:1/-1;grid-row:3;gap:7px}.ym-volume input{flex:1;width:100%;min-width:0}.ym-volume label{display:block;max-width:115px;font-size:10px}.ym-main{padding:18px 12px}.ym-header{display:block;margin-bottom:18px}h1{font-size:23px}h2{font-size:18px}.ym-search{max-width:none;min-width:0;margin-top:12px}.ym-wave-banner{padding:16px;margin-bottom:20px}.ym-wave-banner h2{font-size:20px}.ym-wave-banner p{font-size:12px}.ym-wave-banner .ym-primary{flex:none;padding:10px 14px}.ym-card-row{grid-auto-columns:140px;gap:12px}.ym-card-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 12px}.ym-track{grid-template-columns:20px 40px minmax(0,1fr) 38px;gap:8px;min-height:58px}.ym-track-art{width:40px;height:40px}.ym-track-play{display:none}.ym-track-main strong{font-size:13px}.ym-track-time{font-size:11px}.ym-dialog{position:fixed;inset:auto 0 0;margin:0;width:100%;max-width:100%;max-height:85dvh;border-radius:16px 16px 0 0;padding:16px 18px max(20px,env(safe-area-inset-bottom))}.ym-source-option small{max-width:calc(100vw - 100px)}}
 @media(max-height:600px) and (max-width:800px){.ym-player-area{max-height:60dvh}.ym-stations-heading{display:none}.ym-station{min-height:48px}.ym-player-actions{grid-row:3;grid-column:1}.ym-volume{grid-row:3;grid-column:2}.ym-volume label{display:none}.ym-volume input{min-width:60px}.ym-timeline{height:22px}.ym-player{padding-bottom:0}.ym-now-copy>.ym-muted{display:none}}

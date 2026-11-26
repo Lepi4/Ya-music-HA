@@ -15,7 +15,7 @@ class SessionAdapterTest(unittest.IsolatedAsyncioTestCase):
         track = NS(id=101, title="Session track", artists=[], albums=[], duration_ms=60000, available=True)
         sequence = [NS(track=track)]
         first = NS(radio_session_id="session-1", batch_id="batch-1", sequence=sequence, terminated=False)
-        second = NS(radio_session_id="session-1", batch_id="batch-2", sequence=[NS(track=NS(id=102, title="Next", artists=[], albums=[], duration_ms=60000, available=True))], terminated=False)
+        second = NS(batch_id="batch-2", sequence=[NS(track=NS(id=102, title="Next", artists=[], albums=[], duration_ms=60000, available=True))], terminated=False)
         class Client:
             def rotor_session_new(self, *args, **kwargs):
                 calls.append(("new", args, kwargs)); return first
@@ -40,6 +40,7 @@ class SessionAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created["tracks"][0]["id"], "101")
         next_batch = await service.session_tracks("session-1", ["99", "101"])
         self.assertEqual(next_batch["batch"], "batch-2")
+        self.assertEqual(next_batch["session_id"], "session-1")
         await service.session_feedback("session-1", "trackStarted", "101", "batch-1")
 
         self.assertEqual([item[0] for item in calls], ["new", "tracks", "feedback"])
@@ -62,6 +63,11 @@ class SessionAdapterTest(unittest.IsolatedAsyncioTestCase):
         service.client = get_client
         with self.assertRaises(RuntimeError):
             await service.session_new("user:onyourwave")
+
+    async def test_unknown_session_must_not_reuse_requested_id(self):
+        service_type = load_service()
+        with self.assertRaisesRegex(RuntimeError,"завершена"):
+            service_type._session_payload(NS(unknown_session=True,sequence=[]),"old-session")
 
 
 if __name__ == "__main__":

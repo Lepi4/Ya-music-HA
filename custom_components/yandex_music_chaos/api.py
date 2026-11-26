@@ -82,6 +82,7 @@ def _players(hass: HomeAssistant, service: YandexMusicService) -> list[dict[str,
                 "media_id": attrs.get("media_content_id"),
             }
         )
+    result = [service.outputs.project(row["entity_id"], row) for row in result]
     return sorted(result, key=lambda row: (not row["source"], row["name"].lower()))
 
 
@@ -314,7 +315,8 @@ class RadioView(_BaseView):
             station = str(body.get("seed") or "user:onyourwave")
             if body.get("by_current") or body.get("mode") in ("track", "genre", "artist", "album"):
                 state = service.hass.states.get(entity_id)
-                seed = track_id(state.attributes.get("media_content_id")) if state else ""
+                route = service.outputs.routes.get(entity_id)
+                seed = str(route.current["id"]) if route and route.current else track_id(state.attributes.get("media_content_id")) if state else ""
                 if not seed:
                     return _json({"error": "У текущего трека нет идентификатора Яндекс Музыки"}, 400)
                 mode = str(body.get("mode") or "track")
@@ -328,7 +330,10 @@ class RadioView(_BaseView):
                     station = f"{mode}:{value}"
             elif "mood_energy" in body:
                 await service.set_wave_mood(str(body["mood_energy"]))
-            await service.radio.start(entity_id, station)
+            if entity_id in service.outputs.routes:
+                await service.outputs.start_radio(entity_id, station)
+            else:
+                await service.radio.start(entity_id, station)
             return _json({"radio": service.radio.snapshot()})
         except Exception as err:
             return self.error(err)
@@ -492,6 +497,73 @@ class LikeView(_BaseView):
             return self.error(err)
 
 
+class OutputsView(_BaseView):
+    url = f"{API_PREFIX}/outputs"
+    name = f"api:{DOMAIN}:outputs"
+
+    async def get(self, request):
+        try:
+            service = self.service(request)
+            station = str(request.query.get("station", ""))
+            route = service.outputs.routes.get(station)
+            return _json({"sources": service.outputs.choices(station),
+                          "native_sources": service.outputs.station_entity(station).source_list, "direct": bool(route),
+                          "source": route.source if route else None})
+        except Exception as err:
+            return self.error(err)
+
+    async def post(self, request):
+        try:
+            service = self.service(request)
+            body = await request.json()
+            await service.outputs.select(str(body.get("entity_id", "")), str(body.get("source", "")), bool(body.get("direct")))
+            return _json({"players": _players(service.hass, service)})
+        except Exception as err:
+            return self.error(err)
+
+
+class OutputCommandView(_BaseView):
+    url = f"{API_PREFIX}/outputs/command"
+    name = f"api:{DOMAIN}:output_command"
+
+    async def post(self, request):
+        try:
+            service = self.service(request)
+            body = await request.json()
+            await service.outputs.command(str(body.get("entity_id", "")), str(body.get("action", "")), body)
+            return _json({"players": _players(service.hass, service), "radio": service.radio.snapshot()})
+        except Exception as err:
+            return self.error(err)
+
+
+class NativePlayView(_BaseView):
+    url = f"{API_PREFIX}/playback"
+    name = f"api:{DOMAIN}:native_playback"
+
+    async def post(self, request):
+        try:
+            service = self.service(request)
+            body = await request.json()
+            queue = [t for t in (normalize_track(item) for item in body.get("queue", [])) if t]
+            index = int(body.get("index", 0))
+            if not queue or not 0 <= index < len(queue):
+                return _json({"error": "Некорректная очередь"}, 400)
+            available = {p["entity_id"] for p in _players(service.hass, service) if p["is_yandex_station"]}
+            targets = _targets(service.hass, body.get("targets"))
+            if not targets or any(t not in available for t in targets):
+                return _json({"error": "Выберите Яндекс-колонки"}, 400)
+            for target in targets:
+                if target in service.outputs.routes:
+                    await service.outputs.playlist(target, queue, index)
+                else:
+                    await service.radio.control(target, "detach")
+                    await _call_media(service.hass, "play_media", [target], {
+                        "media_content_id": str(queue[index]["id"]), "media_content_type": "track"})
+            return _json({"players": _players(service.hass, service), "radio": service.radio.snapshot()})
+        except Exception as err:
+            return self.error(err)
+
+
 class StreamView(HomeAssistantView):
     url = f"{API_PREFIX}/stream/{{track_id}}"
     name = f"api:{DOMAIN}:stream"
@@ -538,6 +610,9 @@ def register_views(hass: HomeAssistant, service: YandexMusicService) -> None:
         PlayView,
         CommandView,
         LikeView,
+        OutputsView,
+        OutputCommandView,
+        NativePlayView,
         StreamView,
     ):
         hass.http.register_view(view())

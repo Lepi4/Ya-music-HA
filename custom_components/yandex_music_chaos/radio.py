@@ -50,6 +50,7 @@ class RadioSession:
     feedback_error: str | None = None
     requested_at: float = 0
     session_id: str | None = None
+    direct_output: bool = False
 
     @property
     def current(self) -> dict | None:
@@ -110,6 +111,8 @@ class RadioController:
         async with self.lock(entity_id):
             previous = self.sessions.get(entity_id)
             s = RadioSession(entity_id, station)
+            outputs = getattr(self.service, "outputs", None)
+            s.direct_output = bool(outputs and entity_id in outputs.routes)
             try:
                 await self.replenish(s)
                 if not s.tracks:
@@ -136,6 +139,13 @@ class RadioController:
         s.waiting = False
         s.requested_at = time.monotonic()
         try:
+            outputs = getattr(self.service, "outputs", None)
+            if s.direct_output and (not outputs or s.entity_id not in outputs.routes):
+                raise YandexMusicError("Прямой source отключён; запуск на Станции отменён")
+            if outputs and await outputs.play_radio(s.entity_id, s.current):
+                s.error = None
+                s.retries = 0
+                return
             # HA owns the sequence; the station only plays this Yandex track.
             await self.hass.services.async_call("media_player", "play_media", {
                 "entity_id": [s.entity_id], "media_content_type": "track",
@@ -154,8 +164,11 @@ class RadioController:
     async def finish(self, s, kind, played_seconds=None):
         if s.current and s.observed and not s.finished:
             s.finished = True
-            state = self.hass.states.get(s.entity_id)
-            seconds = played_seconds if played_seconds is not None else position(state) if state and track_id(state.attributes.get("media_content_id")) == s.current["id"] else 0
+            outputs = getattr(self.service, "outputs", None)
+            route = outputs.routes.get(s.entity_id) if outputs else None
+            state = self.hass.states.get(route.entity_id if route else s.entity_id)
+            matches = outputs.matches(route, state) if route else state and track_id(state.attributes.get("media_content_id")) == s.current["id"]
+            seconds = played_seconds if played_seconds is not None else position(state) if matches else 0
             await self.feedback(s, kind, seconds)
 
     async def advance(self, s, finished=False, index=None, played_seconds=None):
@@ -185,7 +198,11 @@ class RadioController:
                 s.active = False
                 del self.sessions[entity_id]
                 if action == "stop":
-                    await self.hass.services.async_call("media_player", "media_stop", {"entity_id": [entity_id]}, blocking=True)
+                    outputs = getattr(self.service, "outputs", None)
+                    route = outputs.routes.get(entity_id) if outputs else None
+                    if route:
+                        route.active = False
+                    await self.hass.services.async_call("media_player", "media_stop", {"entity_id": [route.entity_id if route else entity_id]}, blocking=True)
                 return True
             if not s.active:
                 return False
@@ -203,6 +220,9 @@ class RadioController:
 
     async def handle_event(self, event):
         entity_id = event.data.get("entity_id")
+        outputs = getattr(self.service, "outputs", None)
+        if outputs and entity_id in outputs.routes and not event.data.get("direct_output"):
+            return
         if entity_id not in self.sessions:
             return
         async with self.lock(entity_id):
@@ -220,7 +240,7 @@ class RadioController:
                 self.sessions.pop(entity_id, None)
                 return
             duration = float((old.attributes.get("media_duration") if old else None) or (s.current or {}).get("duration") or 0)
-            if (s.observed and old and old.state == "playing" and new.state == "paused"
+            if (not event.data.get("direct_output") and s.observed and old and old.state == "playing" and new.state == "paused"
                     and actual == expected and duration > 0
                     and float(new.attributes.get("media_position") or 0) >= duration - .25):
                 try:

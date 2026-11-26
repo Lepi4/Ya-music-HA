@@ -10,7 +10,7 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.3.6`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.4.0`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
@@ -21,6 +21,7 @@ const players = [
 ];
 const track = {id:'1',title:'Test song',artists:'Artist',duration:180};
 const selectedSources = new Map();
+const directOutputs = new Map();
 const radioSessions = {};
 const sourceList = ['Station','media_player.shield','media_player.shield_3'];
 const waveStations = [
@@ -62,6 +63,19 @@ try {
     assert.ok(!path.startsWith('/'), `callApi must receive a relative API path: ${path}`);
     if(live && method==='GET') return remoteGet(path);
     if(method==='POST') {
+      if(path.endsWith('/outputs')) {
+        const player=players.find(p=>p.entity_id===body.entity_id);
+        if(body.direct && body.source!=='Station') {
+          directOutputs.set(body.entity_id,body.source);
+          Object.assign(player,{direct_output:true,output_entity:body.source,input_source:body.source,source_list:sourceList});
+        } else {
+          directOutputs.delete(body.entity_id);
+          Object.assign(player,{direct_output:false,output_entity:undefined,input_source:body.source});
+        }
+        return {players};
+      }
+      if(path.endsWith('/outputs/command')) return {players,radio:radioSessions};
+      if(path.endsWith('/playback')) return {players,radio:radioSessions};
       if(path.endsWith('/radio')) {
         radioSessions[body.entity_id] = {active:true,station:body.by_current?'track:12345':'user:onyourwave',tracks:[track,{...track,id:'2'}],index:0};
         return {radio:radioSessions};
@@ -75,6 +89,7 @@ try {
       return {ok:true}; // Never play/stop/change volume/source on real devices in this UI test.
     }
     if(path.startsWith('states/')) return {attributes:{media_content_id:'12345',source:selectedSources.get(path.slice(7))||'Station',source_list:sourceList}};
+    if(path.includes('/outputs?')) return {sources:sourceList.filter(s=>s!=='Station').map(source=>({source,entity_id:source}))};
     if(path.endsWith('/config')) return {target_entities:players.slice(0,2).map(p=>p.entity_id)};
     if(path.endsWith('/status')) return {authorized:true,account:{login:'Test'},players,playback:{queue:[],index:-1}};
     if(path.endsWith('/players')) return {players,playback:{queue:[],index:-1,radio:radioSessions}};
@@ -111,7 +126,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.3.6');
+  assert.equal(metrics.version,'0.4.0');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
@@ -165,6 +180,34 @@ try {
   await page.locator('#ym-recommendations h2').first().waitFor();
 
   if(!live){
+    // Direct output reads receiver progress, sends controls only to the backend
+    // route, and returns to the native path when explicitly disabled.
+    await page.locator('[data-station="media_player.two"]').click();
+    await page.locator('[data-action="input-source"]').click();
+    await page.locator('#ym-direct-output').check();
+    await page.locator('[data-input-source="media_player.shield"]').click();
+    await page.waitForTimeout(80);
+    assert.deepEqual(calls.findLast(c=>c.path.endsWith('/outputs')).body,{entity_id:'media_player.two',source:'media_player.shield',direct:true});
+    await page.evaluate(()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      el.hass={...el.hass,states:{'media_player.two':{state:'paused',attributes:{media_position:180,media_title:'Station already finished'}},'media_player.shield':{state:'playing',attributes:{media_position:173,media_duration:180,volume_level:.21}}}};
+    });
+    assert.equal(await page.locator('#ym-seek').inputValue(),'173');
+    assert.notEqual(await page.locator('#ym-now-title').textContent(),'Station already finished');
+    await page.locator('#ym-volume').evaluate(el=>{el.value='.32';el.dispatchEvent(new Event('change',{bubbles:true}));});
+    await page.waitForTimeout(80);
+    assert.equal(calls.findLast(c=>c.path.endsWith('/outputs/command')).body.level,.32);
+    await page.evaluate(async()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      await el.playTracks([{id:'12',title:'Receiver test'}],0,['media_player.two']);
+    });
+    assert.equal(calls.findLast(c=>c.path.endsWith('/playback')).body.queue[0].id,'12');
+    await page.locator('[data-action="input-source"]').click();
+    await page.locator('#ym-direct-output').uncheck();
+    await page.locator('[data-input-source="Station"]').click();
+    await page.waitForTimeout(80);
+    assert.equal(calls.findLast(c=>c.path.endsWith('/outputs')).body.direct,false);
+    await page.evaluate(()=>{const el=document.querySelector('yandex-music-chaos-panel');el.hass={...el.hass,states:{}};});
     // A HA push between mouse down/up must not replace or move the pressed card.
     await page.evaluate(()=>{
       const el=document.querySelector('yandex-music-chaos-panel');
@@ -400,6 +443,7 @@ try {
     await page.locator('[data-action="input-source"]').click();
     const inputDialog=await page.locator('#ym-input-source-dialog').boundingBox();
     assert.ok(inputDialog.x>=0 && inputDialog.x+inputDialog.width<=size.width+1);
+    if(size.width===390 && size.height===844) await page.screenshot({path:fileURLToPath(new URL('../artifacts/direct-output-dialog-mobile.png',import.meta.url))});
     await page.keyboard.press('Escape');
   }
   await page.setViewportSize({width:390,height:844});

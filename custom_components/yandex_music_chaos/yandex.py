@@ -431,8 +431,10 @@ class YandexMusicService:
         return [track for track in (normalize_track(getattr(row, "track", row)) for row in sequence) if track]
 
     @staticmethod
-    def _session_payload(result: Any) -> dict[str, Any]:
-        session_id = getattr(result, "radio_session_id", None)
+    def _session_payload(result: Any, session_id: str | None = None) -> dict[str, Any]:
+        if getattr(result, "unknown_session", False):
+            raise YandexMusicError("Сессия Моей волны завершена Яндексом; запустите волну заново")
+        session_id = getattr(result, "radio_session_id", None) or session_id
         if not session_id:
             raise YandexMusicError("Яндекс не вернул идентификатор Rotor-сессии")
         return {
@@ -457,7 +459,7 @@ class YandexMusicService:
         result = await self.hass.async_add_executor_job(lambda: client.rotor_session_tracks(
             session_id, queue=queue,
         ))
-        return self._session_payload(result)
+        return self._session_payload(result, session_id)
 
     async def session_feedback(self, session_id: str, kind: str, track: str | None,
                                batch: str | None, seconds=0) -> None:
@@ -577,7 +579,7 @@ class YandexMusicService:
             lambda: fn(track_id, user_id=account["uid"])
         )
 
-    async def direct_url(self, track_id: str) -> str:
+    async def direct_url(self, track_id: str, prefer_mp3: bool = False) -> str:
         client = await self.client()
         infos = await self.hass.async_add_executor_job(
             lambda: client.tracks_download_info(track_id, get_direct_links=True)
@@ -585,7 +587,7 @@ class YandexMusicService:
         candidates = list(infos or [])
         if not candidates:
             raise YandexMusicError("Для трека не получена ссылка на поток")
-        order = {"flac": 3, "aac": 2, "mp3": 1}
+        order = {"mp3": 3, "aac": 2, "flac": 1} if prefer_mp3 else {"flac": 3, "aac": 2, "mp3": 1}
         selected = max(
             candidates,
             key=lambda row: (order.get(str(getattr(row, "codec", "")).lower(), 0), int(getattr(row, "bitrate_in_kbps", 0) or 0)),
