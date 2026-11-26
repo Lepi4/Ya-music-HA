@@ -10,7 +10,7 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.4.1`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.4.2`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
@@ -22,6 +22,8 @@ const players = [
 const track = {id:'1',title:'Test song',artists:'Artist',duration:180};
 const selectedSources = new Map();
 const directOutputs = new Map();
+const likedIds = new Set(['1','2']);
+let failLike = false;
 const radioSessions = {};
 const sourceList = ['Station','media_player.shield','media_player.shield_3'];
 const waveStations = [
@@ -63,6 +65,12 @@ try {
     assert.ok(!path.startsWith('/'), `callApi must receive a relative API path: ${path}`);
     if(live && method==='GET') return remoteGet(path);
     if(method==='POST') {
+      if(path.endsWith('/like')) {
+        await new Promise(resolve=>setTimeout(resolve,80));
+        if(failLike) throw new Error('Like request failed');
+        if(body.liked) likedIds.add(body.track_id); else likedIds.delete(body.track_id);
+        return {ok:true,track_id:body.track_id,liked:body.liked};
+      }
       if(path.endsWith('/outputs')) {
         const player=players.find(p=>p.entity_id===body.entity_id);
         if(body.direct && body.source!=='Station') {
@@ -89,6 +97,7 @@ try {
       return {ok:true}; // Never play/stop/change volume/source on real devices in this UI test.
     }
     if(path.startsWith('states/')) return {attributes:{media_content_id:'12345',source:selectedSources.get(path.slice(7))||'Station',source_list:sourceList}};
+    if(path.endsWith('/like')) return {track_ids:[...likedIds]};
     if(path.includes('/outputs?')) return {sources:sourceList.filter(s=>s!=='Station').map(source=>({source,entity_id:source}))};
     if(path.endsWith('/config')) return {target_entities:players.slice(0,2).map(p=>p.entity_id)};
     if(path.endsWith('/status')) return {authorized:true,account:{login:'Test'},players,playback:{queue:[],index:-1}};
@@ -126,7 +135,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.4.1');
+  assert.equal(metrics.version,'0.4.2');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
@@ -180,6 +189,58 @@ try {
   await page.locator('#ym-recommendations h2').first().waitFor();
 
   if(!live){
+    // Hearts are independent buttons: no playback command on add/remove, and
+    // no optimistic success when the service rejects a mutation.
+    await page.locator('#ym-like-current').waitFor({state:'visible'});
+    await page.waitForTimeout(100);
+    const currentLikeId=await page.locator('#ym-like-current').getAttribute('data-like-id');
+    const playbackWrites=()=>calls.filter(c=>c.method==='POST' && !c.path.endsWith('/like')).length;
+    const beforeLikes=playbackWrites();
+    await page.locator('#ym-like-current').evaluate(button=>{button.click();button.click();});
+    await page.waitForTimeout(120);
+    assert.equal(calls.filter(c=>c.method==='POST' && c.path.endsWith('/like') && c.body.track_id===currentLikeId).length,1);
+    assert.equal(await page.locator('#ym-like-current').getAttribute('aria-pressed'),'true');
+    await page.locator('#ym-like-current').click();
+    await page.waitForTimeout(120);
+    assert.equal(await page.locator('#ym-like-current').getAttribute('aria-pressed'),'false');
+    assert.equal(playbackWrites(),beforeLikes);
+    await page.locator('#ym-like-current').evaluate(button=>button.click());
+    await page.locator('[data-station="media_player.one"]').click();
+    await page.waitForTimeout(120);
+    assert.equal(calls.findLast(c=>c.path.endsWith('/like') && c.method==='POST').body.track_id,currentLikeId);
+    assert.equal(await page.locator('#ym-like-current').isDisabled(),true);
+    await page.locator('[data-station="media_player.two"]').click();
+    assert.equal(await page.locator('#ym-like-current').getAttribute('aria-pressed'),'true');
+    await page.locator('#ym-like-current').click();
+    await page.waitForTimeout(120);
+    await page.evaluate(async()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      const original=el.api.bind(el);
+      let release;
+      el.api=(path,options)=>path==='/like' && !options?.method ? new Promise(resolve=>{release=resolve;}) : original(path,options);
+      const stale=el.loadLikes();
+      await el.toggleLike('888');
+      release({track_ids:[]});
+      await stale;
+      if(!el._likedIds.has('888'))throw Error('Stale like read overwrote confirmed mutation');
+      el.api=original;
+      await el.toggleLike('888');
+    });
+    const rowHeart=page.locator('#ym-content .ym-track-row [data-like-id="1"]').first();
+    assert.equal(await rowHeart.getAttribute('aria-pressed'),'true');
+    failLike=true;
+    await rowHeart.click();
+    await page.waitForTimeout(120);
+    assert.equal(await rowHeart.getAttribute('aria-pressed'),'true');
+    assert.equal(await page.locator('#ym-error').isVisible(),true);
+    failLike=false;
+    await rowHeart.click();
+    await page.waitForTimeout(120);
+    assert.equal(await rowHeart.getAttribute('aria-pressed'),'false');
+    await rowHeart.click();
+    await page.waitForTimeout(120);
+    assert.equal(await rowHeart.getAttribute('aria-pressed'),'true');
+    assert.equal(playbackWrites(),beforeLikes);
     // Direct output reads receiver progress, sends controls only to the backend
     // route, and returns to the native path when explicitly disabled.
     await page.locator('[data-station="media_player.two"]').click();
@@ -190,10 +251,10 @@ try {
     assert.deepEqual(calls.findLast(c=>c.path.endsWith('/outputs')).body,{entity_id:'media_player.two',source:'media_player.shield',direct:true});
     await page.evaluate(()=>{
       const el=document.querySelector('yandex-music-chaos-panel');
-      el.hass={...el.hass,states:{'media_player.two':{state:'paused',attributes:{media_position:180,media_title:'Station already finished'}},'media_player.shield':{state:'playing',attributes:{media_position:173,media_duration:180,volume_level:.21}}}};
+      el.hass={...el.hass,states:{'media_player.two':{state:'paused',attributes:{media_position:180,media_title:'Station already finished'}},'media_player.shield':{state:'playing',attributes:{media_position:173,media_position_updated_at:new Date().toISOString(),media_duration:180,volume_level:.21}}}};
     });
     assert.equal(await page.locator('#ym-seek').inputValue(),'173');
-    await page.waitForTimeout(1200);
+    await page.waitForFunction(()=>Number(document.querySelector('yandex-music-chaos-panel').querySelector('#ym-seek').value)>=174,null,{timeout:2500});
     assert.ok(Number(await page.locator('#ym-seek').inputValue())>=174, 'Receiver timeline must progress between HA polls');
     await page.evaluate(()=>{
       const el=document.querySelector('yandex-music-chaos-panel');
@@ -258,6 +319,9 @@ try {
     assert.equal(calls.filter(c=>c.path.includes('/search?')).length,globalCalls);
     await page.locator('#ym-search').fill('');
     assert.equal(await page.locator('.ym-track').count(),2);
+    await page.locator('.ym-track-row [data-like-id="2"]').click();
+    await page.waitForTimeout(120);
+    assert.equal(await page.locator('.ym-track').count(),1,'Unlike must remove the row from the current favorites page');
     await page.locator('[data-section="home"]').click();
     await page.locator('#ym-recommendations h2').waitFor();
     await page.locator('[data-action="input-source"]').click();
@@ -444,6 +508,8 @@ try {
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     const playSize=await page.locator('[data-cmd="toggle"]').boundingBox();
     assert.ok(playSize.width>=44 && playSize.height>=44);
+    const heart=await page.locator('#ym-like-current').boundingBox();
+    assert.ok(heart.width>=44 && heart.x>=0 && heart.x+heart.width<=size.width,'Current-track heart must remain visible on mobile');
     await page.locator('[data-action="sources"]').click();
     const dialog=await page.locator('#ym-sources-dialog').boundingBox();
     assert.ok(dialog.x>=0 && dialog.x+dialog.width<=size.width+1);

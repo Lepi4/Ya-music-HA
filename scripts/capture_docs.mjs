@@ -30,6 +30,7 @@ export async function captureDocs(browser, source, readApi) {
       if(path.endsWith('/recommendations'))return recommendations;
       if(path.endsWith('/playlists'))return {playlists};
       if(path.endsWith('/likes'))return {tracks:[song]};
+      if(path.endsWith('/like'))return {track_ids:[song.id]};
       if(path.endsWith('/wave/stations'))return stations;
       if(path.endsWith('/wave/settings'))return {mood_energy:'all',moods:[{value:'all',name:'Любое'},{value:'calm',name:'Спокойное'},{value:'active',name:'Бодрое'}]};
       throw Error(`Unexpected documentation endpoint ${path}`);

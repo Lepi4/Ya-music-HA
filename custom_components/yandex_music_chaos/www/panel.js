@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.4.1";
+const PANEL_VERSION = "0.4.2";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -45,6 +45,9 @@ class YandexMusicChaosPanel extends HTMLElement {
     this._stationTargets = new Map();
     this._catalogCache = new Map();
     this._sourceInfo = new Map();
+    this._likedIds = new Set();
+    this._likePending = new Set();
+    this._likesRevision = 0;
     this._inputSourceBusy = false;
     this._title = "Яндекс Музыка";
     this.shadowRoot.innerHTML = `<style>${CSS}</style><div class="ym-shell">
@@ -68,7 +71,7 @@ class YandexMusicChaosPanel extends HTMLElement {
       <div id="ym-stations" class="ym-stations" aria-label="Выбор колонки"></div>
       <button class="ym-input-source-button" data-action="input-source" aria-haspopup="dialog"><span class="ym-input-source-icon">⇄</span><span><small>Источник воспроизведения</small><strong id="ym-input-source-name">Загрузка…</strong></span><span class="ym-input-source-change">Сменить источник ▾</span></button>
       <section class="ym-player" aria-label="Управление выбранной колонкой">
-        <div class="ym-now"><div class="ym-artwork"><span>♫</span><img id="ym-cover" alt="" hidden></div><div class="ym-now-copy"><span id="ym-player-name" class="ym-player-name">Выберите колонку</span><strong id="ym-now-title">Ничего не играет</strong><span id="ym-now-artist" class="ym-muted">Выберите музыку в библиотеке</span></div></div>
+        <div class="ym-now"><div class="ym-artwork"><span>♫</span><img id="ym-cover" alt="" hidden></div><div class="ym-now-copy"><span id="ym-player-name" class="ym-player-name">Выберите колонку</span><strong id="ym-now-title">Ничего не играет</strong><span id="ym-now-artist" class="ym-muted">Выберите музыку в библиотеке</span></div><button id="ym-like-current" class="ym-icon-button ym-like" data-like-id="" aria-label="Добавить в «Мне нравится»" aria-pressed="false" disabled>♡</button></div>
         <div class="ym-transport"><div class="ym-controls"><button data-cmd="previous" aria-label="Предыдущий трек">⏮</button><button class="ym-play" data-cmd="toggle" aria-label="Воспроизвести">▶</button><button data-cmd="next" aria-label="Следующий трек">⏭</button><button data-cmd="stop" aria-label="Остановить">■</button></div><div class="ym-timeline"><span id="ym-position">0:00</span><input id="ym-seek" type="range" min="0" max="1" value="0" step="1" aria-label="Позиция трека" disabled><span id="ym-duration">0:00</span></div></div>
         <div class="ym-player-actions"><button class="ym-action" data-action="sources" aria-haspopup="dialog">▣ <span>Куда воспроизводить<small id="ym-target-label">Выберите колонку</small></span></button><button class="ym-icon-button" data-action="queue" aria-label="Открыть очередь" title="Очередь">☷</button></div>
         <div class="ym-volume"><button class="ym-icon-button" data-cmd="mute" aria-label="Выключить звук">♪</button><input id="ym-volume" type="range" min="0" max="1" step="0.01" value="0" aria-label="Громкость выбранной колонки" disabled><output id="ym-volume-value">—</output></div>
@@ -134,7 +137,12 @@ class YandexMusicChaosPanel extends HTMLElement {
   }
 
   startPolling() {
-    if (!this._pollTimer) this._pollTimer = setInterval(() => { if (!document.hidden) this.refreshPlayers(); }, 5000);
+    if (!this._pollTimer) this._pollTimer = setInterval(() => {
+      if (!document.hidden) {
+        this.refreshPlayers();
+        if (Date.now()-(this._lastLikesRefresh || 0)>60000) this.loadLikes();
+      }
+    }, 5000);
     if (!this._progressTimer) this._progressTimer = setInterval(() => {
       if (!document.hidden && this.activePlayer()?.direct_output) this.updateTimeline();
     }, 1000);
@@ -202,6 +210,7 @@ class YandexMusicChaosPanel extends HTMLElement {
       this._initialized = true;
       this.syncPlayerStates();
       this.setAccount(status.account);
+      if (status.authorized) this.loadLikes();
       this.updateNowPlaying();
       this.renderTargets();
       this.renderOutputs();
@@ -351,7 +360,7 @@ class YandexMusicChaosPanel extends HTMLElement {
       // Home contains heterogeneous API shelves: filter rendered card/track text.
       content.querySelectorAll(".ym-card,.ym-track").forEach(node => {
         const text = node.textContent.toLocaleLowerCase();
-        node.hidden = !words.every(word => text.includes(word));
+        (node.closest(".ym-track-row") || node).hidden = !words.every(word => text.includes(word));
       });
       content.querySelectorAll(".ym-shelf").forEach(shelf => { shelf.hidden = !shelf.querySelector(".ym-card:not([hidden])"); });
       const wave = content.querySelector(".ym-wave-banner");
@@ -422,7 +431,72 @@ class YandexMusicChaosPanel extends HTMLElement {
   trackRows(tracks) {
     if (!tracks.length) return '<p class="ym-empty">Здесь пока ничего нет.</p>';
     tracks.forEach(track => { this._trackMap[track.id] = track; });
-    return `<div class="ym-tracks">${tracks.map((track,index) => `<button class="ym-track" data-track-id="${escapeHtml(track.id)}"><span class="ym-track-number">${index+1}</span><div class="ym-track-art">${track.cover ? `<img src="${escapeHtml(track.cover)}" alt="" loading="lazy" decoding="async">` : "♫"}</div><span class="ym-track-main"><strong>${escapeHtml(track.title || "Без названия")}</strong><small>${escapeHtml(track.artists || "")}</small></span><span class="ym-track-time">${formatTime(track.duration)}</span><span class="ym-track-play">▶</span></button>`).join("")}</div>`;
+    return `<div class="ym-tracks">${tracks.map((track,index) => `<div class="ym-track-row"><button class="ym-track" data-track-id="${escapeHtml(track.id)}"><span class="ym-track-number">${index+1}</span><div class="ym-track-art">${track.cover ? `<img src="${escapeHtml(track.cover)}" alt="" loading="lazy" decoding="async">` : "♫"}</div><span class="ym-track-main"><strong>${escapeHtml(track.title || "Без названия")}</strong><small>${escapeHtml(track.artists || "")}</small></span><span class="ym-track-time">${formatTime(track.duration)}</span><span class="ym-track-play">▶</span></button>${this.likeButton(track.id)}</div>`).join("")}</div>`;
+  }
+
+  musicTrackId(value) {
+    return String(value || '').match(/(?:^|\/track\/)(\d+)(?=$|[?:/])/)?.[1] || '';
+  }
+
+  likeButton(value) {
+    const id=this.musicTrackId(value), liked=this._likedIds.has(id), pending=this._likePending.has(id);
+    const label=liked ? 'Убрать из «Мне нравится»' : 'Добавить в «Мне нравится»';
+    return `<button class="ym-icon-button ym-like ${liked ? 'active' : ''}" data-like-id="${escapeHtml(id)}" aria-pressed="${liked}" title="${label}" aria-label="${label}" ${!id || pending ? 'disabled' : ''}>${liked ? '♥' : '♡'}</button>`;
+  }
+
+  renderLikeButtons() {
+    this.querySelectorAll('[data-like-id]').forEach(button=>{
+      const id=button.dataset.likeId, liked=this._likedIds.has(id);
+      const label=liked ? 'Убрать из «Мне нравится»' : 'Добавить в «Мне нравится»';
+      button.textContent=liked ? '♥' : '♡';
+      button.classList.toggle('active',liked);
+      button.disabled=!id || this._likePending.has(id);
+      button.setAttribute('aria-pressed',String(liked));
+      button.setAttribute('aria-label',label);
+      button.title=label;
+    });
+  }
+
+  async loadLikes() {
+    if (this._likesLoading || !this._initialized) return;
+    this._likesLoading=true;
+    this._lastLikesRefresh=Date.now();
+    const revision=this._likesRevision;
+    try {
+      let ids;
+      try { ids=(await this.api('/like')).track_ids; }
+      catch (_) {
+        // The add/remove endpoint already exists in older installs. Keep the
+        // buttons usable while the updated backend is waiting for a restart.
+        ids=(await this.catalog('/likes')).tracks?.map(track=>track.id);
+      }
+      if (revision!==this._likesRevision || !Array.isArray(ids)) return;
+      this._likedIds=new Set(ids.map(id=>this.musicTrackId(id)).filter(Boolean));
+      this.renderLikeButtons();
+    } catch (_) { /* A failed read must not invent a successful mutation. */ }
+    finally { this._likesLoading=false; }
+  }
+
+  async toggleLike(value) {
+    const id=this.musicTrackId(value);
+    if (!id || this._likePending.has(id)) return;
+    const liked=!this._likedIds.has(id);
+    this._likePending.add(id);
+    this.renderLikeButtons();
+    this.clearError();
+    try {
+      const result=await this.api('/like',{method:'POST',body:{track_id:id,liked}});
+      if (!result.ok) throw new Error('Яндекс Музыка не подтвердила изменение «Мне нравится»');
+      this._likesRevision++;
+      if (liked) this._likedIds.add(id); else this._likedIds.delete(id);
+      this._catalogCache.delete('/likes');
+      if (this._section==='likes' && this._sectionData?.tracks && !liked) {
+        this._sectionData.tracks=this._sectionData.tracks.filter(track=>this.musicTrackId(track.id)!==id);
+        this.filterSection(this.querySelector('#ym-search').value);
+      }
+      this.notice(liked ? 'Добавлено в «Мне нравится»' : 'Удалено из «Мне нравится»');
+    } catch (error) { this.showError(error); }
+    finally { this._likePending.delete(id); this.renderLikeButtons(); }
   }
 
   stations() {
@@ -506,6 +580,8 @@ class YandexMusicChaosPanel extends HTMLElement {
     this.querySelector("#ym-target-label").textContent = this._targets.map(id => this.stations().find(p => p.entity_id === id)?.name).filter(Boolean).join(", ") || "Выберите колонку";
     this.querySelector('[data-action="sources"]').disabled = disabled;
     const hasTrackId = /^(?:\d+)(?::\d+)?$|\/track\/\d+/.test(String(player?.media_id || ""));
+    this.querySelector('#ym-like-current').dataset.likeId=this.musicTrackId(player?.media_id);
+    this.renderLikeButtons();
     this.querySelector('[data-action="track-wave"]').disabled = disabled || !hasTrackId || this._radioBusy;
     this.querySelector('[data-action="genre-wave"]').disabled = disabled || !hasTrackId || this._radioBusy;
     const radio = this._radioSessions[player?.entity_id];
@@ -815,6 +891,8 @@ class YandexMusicChaosPanel extends HTMLElement {
   }
 
   onClick(event) {
+    const like=event.target.closest('[data-like-id]');
+    if (like) { this.toggleLike(like.dataset.likeId); return; }
     const suggested = event.target.closest("[data-search-query]");
     if (suggested) { this.loadSection("search", {query:suggested.dataset.searchQuery}); return; }
     const waveSeed = event.target.closest("[data-wave-seed]");
@@ -869,7 +947,7 @@ const CSS = `
 *{box-sizing:border-box}button,input{font:inherit}button{cursor:pointer;color:inherit;touch-action:manipulation}button:disabled{cursor:default;opacity:.4}button:focus-visible,input:focus-visible{outline:2px solid var(--ym-primary);outline-offset:3px}h1,h2,p{margin:0}h1{font-size:26px;font-weight:600}h2{font-size:19px;font-weight:600}strong{font-weight:500}input[type=range]{accent-color:var(--ym-primary);min-height:44px;cursor:pointer;touch-action:pan-y}input[type=checkbox]{accent-color:var(--ym-primary);width:21px;height:21px;flex:none}.hidden,[hidden]{display:none!important}.ym-muted{color:#a6a6a6}
 .ym-shell{height:100%;display:grid;grid-template-columns:216px minmax(0,1fr);background:#181818}.ym-sidebar{display:flex;flex-direction:column;padding:24px 12px;overflow:auto;background:#232323;border-right:1px solid #333}.ym-brand{display:flex;align-items:center;gap:10px;padding:0 8px 24px;font-size:17px;font-weight:600}.ym-brand-mark{width:34px;height:34px;background:var(--ym-primary);color:#fff;border-radius:50%;display:grid;place-items:center;font-size:24px;flex:none}.ym-version{display:block;font-size:10px;color:#999;font-weight:400}.ym-nav-caption{padding:20px 14px 8px;color:#a0a0a0;font-size:12px}.ym-nav{display:flex;align-items:center;gap:14px;border:0;border-radius:7px;min-height:48px;padding:10px 14px;text-align:left;background:transparent;color:#ddd}.ym-nav>span{width:24px;font-size:24px;text-align:center}.ym-nav:hover{background:#303030}.ym-nav.active{background:#03a9f420;color:#29b6f6}.ym-account{margin-top:auto;padding:24px 14px 0;font-size:12px;color:#999;overflow-wrap:anywhere}
 .ym-workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-width:0;min-height:0}.ym-player-area{padding:16px 24px 0;background:#202020;border-bottom:1px solid #363636;min-width:0;max-height:52vh;overflow:auto}.ym-stations-heading{display:flex;align-items:center;gap:16px;margin-bottom:10px}.ym-stations-heading h2{font-size:15px}.ym-stations-heading>span{font-size:12px;color:#999}.ym-stations{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 8px;scrollbar-width:thin;scroll-snap-type:x proximity}.ym-station{display:flex;align-items:center;gap:10px;flex:1 0 180px;max-width:330px;min-width:0;min-height:64px;border:1px solid #404040;border-radius:9px;background:#292929;padding:10px 12px;text-align:left;scroll-snap-align:start}.ym-station.selected{border-color:var(--ym-primary);background:#03a9f412}.ym-speaker-icon{font-size:27px;color:#aaa}.ym-station.selected .ym-speaker-icon,.ym-selected-mark{color:var(--ym-primary)}.ym-station-copy{flex:1;min-width:0}.ym-station-copy strong,.ym-station-copy small{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ym-station-copy small{font-size:11px;color:#aaa;margin-top:4px}.ym-station-copy i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#777;margin-right:5px}.ym-station.playing .ym-station-copy i{background:#4caf50}.ym-station.playing{box-shadow:inset 0 3px #4caf50}
-.ym-player{display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto;gap:8px 18px;padding:12px 0 10px}.ym-now{display:flex;align-items:center;gap:12px;min-width:0}.ym-artwork{position:relative;width:64px;height:64px;flex:none;background:#333;border-radius:7px;display:grid;place-items:center;color:#999;font-size:30px;overflow:hidden}.ym-artwork img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}.ym-now-copy{min-width:0}.ym-now-copy>span,.ym-now-copy>strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ym-now-copy>strong{font-size:16px;margin:2px 0}.ym-now-copy>.ym-muted{font-size:12px}.ym-player-name{font-size:11px;color:#29b6f6}.ym-transport{min-width:0;align-self:center}.ym-controls{display:flex;align-items:center;justify-content:center;gap:6px}.ym-controls button,.ym-icon-button{border:0;background:transparent;width:44px;height:44px;min-width:44px;display:inline-grid;place-items:center;border-radius:50%;font-size:20px}.ym-controls button:hover,.ym-icon-button:hover{background:#ffffff12}.ym-controls .ym-play{background:var(--ym-primary);color:#fff;width:48px;height:48px;font-size:23px}.ym-icon-button.active{color:#29b6f6;background:#03a9f420}.ym-timeline{display:flex;align-items:center;gap:8px;color:#aaa;font-size:10px;height:32px}.ym-timeline input{flex:1;min-width:0;width:100%;margin:0}.ym-timeline span{font-variant-numeric:tabular-nums}.ym-player-actions{display:flex;align-items:center;gap:4px}.ym-action{display:flex;align-items:center;gap:8px;text-align:left;min-height:48px;border:0;background:transparent;border-radius:7px;padding:6px 8px;color:#ddd}.ym-action:hover{background:#ffffff0b}.ym-action>span{font-size:12px;max-width:180px}.ym-action small{display:block;color:#29b6f6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;font-size:11px}.ym-volume{grid-column:1/-1;display:flex;align-items:center;gap:8px;border-top:1px solid #ffffff09;padding-top:2px;min-width:0}.ym-volume label{font-size:11px;color:#aaa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}.ym-volume input{width:180px;min-width:80px;margin:0}.ym-mobile-stop{display:none}.ym-volume output{font-size:11px;color:#aaa;width:36px;font-variant-numeric:tabular-nums}
+.ym-player{display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto;gap:8px 18px;padding:12px 0 10px}.ym-now{display:flex;align-items:center;gap:12px;min-width:0}.ym-artwork{position:relative;width:64px;height:64px;flex:none;background:#333;border-radius:7px;display:grid;place-items:center;color:#999;font-size:30px;overflow:hidden}.ym-artwork img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}.ym-now-copy{min-width:0;flex:1}.ym-now-copy>span,.ym-now-copy>strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ym-now-copy>strong{font-size:16px;margin:2px 0}.ym-now-copy>.ym-muted{font-size:12px}.ym-player-name{font-size:11px;color:#29b6f6}.ym-transport{min-width:0;align-self:center}.ym-controls{display:flex;align-items:center;justify-content:center;gap:6px}.ym-controls button,.ym-icon-button{border:0;background:transparent;width:44px;height:44px;min-width:44px;display:inline-grid;place-items:center;border-radius:50%;font-size:20px}.ym-controls button:hover,.ym-icon-button:hover{background:#ffffff12}.ym-controls .ym-play{background:var(--ym-primary);color:#fff;width:48px;height:48px;font-size:23px}.ym-icon-button.active{color:#29b6f6;background:#03a9f420}.ym-timeline{display:flex;align-items:center;gap:8px;color:#aaa;font-size:10px;height:32px}.ym-timeline input{flex:1;min-width:0;width:100%;margin:0}.ym-timeline span{font-variant-numeric:tabular-nums}.ym-player-actions{display:flex;align-items:center;gap:4px}.ym-action{display:flex;align-items:center;gap:8px;text-align:left;min-height:48px;border:0;background:transparent;border-radius:7px;padding:6px 8px;color:#ddd}.ym-action:hover{background:#ffffff0b}.ym-action>span{font-size:12px;max-width:180px}.ym-action small{display:block;color:#29b6f6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;font-size:11px}.ym-volume{grid-column:1/-1;display:flex;align-items:center;gap:8px;border-top:1px solid #ffffff09;padding-top:2px;min-width:0}.ym-volume label{font-size:11px;color:#aaa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}.ym-volume input{width:180px;min-width:80px;margin:0}.ym-mobile-stop{display:none}.ym-volume output{font-size:11px;color:#aaa;width:36px;font-variant-numeric:tabular-nums}
 .ym-main{min-height:0;overflow:auto;overscroll-behavior:contain;padding:24px;min-width:0}.ym-header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:24px}.ym-search{display:flex;align-items:center;gap:8px;background:#292929;border:1px solid #404040;border-radius:8px;min-width:220px;max-width:440px;flex:1;padding-left:12px}.ym-search>span{font-size:24px;color:#aaa}.ym-search input{width:100%;min-width:0;min-height:44px;border:0;background:transparent;color:#eee;outline:none;font-size:14px}.ym-search button{align-self:stretch;border:0;border-left:1px solid #404040;background:transparent;padding:0 12px;color:#29b6f6;border-radius:0 7px 7px 0}.ym-error{padding:12px 16px;background:#572326;color:#ffcdd2;border-radius:7px;margin-bottom:16px}.ym-notice{padding:10px 14px;background:#03a9f415;color:#81d4fa;border-radius:7px;margin-bottom:12px}.ym-loading,.ym-empty{padding:24px;color:#aaa;text-align:center}.ym-wave-banner{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px;border-radius:10px;background:linear-gradient(120deg,#0d4770,#283457);margin-bottom:28px}.ym-wave-banner p{color:#b4cddd;font-size:13px;margin-top:4px}.ym-primary,.ym-secondary{min-height:44px;min-width:44px;border:0;border-radius:22px;padding:10px 20px;background:var(--ym-primary);color:#fff;font-weight:500}.ym-secondary{background:#393939}.ym-primary:hover{filter:brightness(1.1)}.ym-shelf{margin-bottom:28px}.ym-section-head{display:flex;align-items:center;justify-content:space-between;margin:20px 0 14px;gap:12px}.ym-link{background:transparent;border:0;color:#29b6f6;min-height:44px}.ym-card-row{display:grid;grid-auto-flow:column;grid-auto-columns:160px;gap:16px;overflow:auto;scroll-snap-type:x proximity;scrollbar-width:thin;padding-bottom:8px}.ym-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:20px}.ym-card{background:transparent;border:0;padding:0;text-align:left;min-width:0;scroll-snap-align:start}.ym-card-art{aspect-ratio:1;position:relative;overflow:hidden;border-radius:8px;background:linear-gradient(135deg,#315975,#364053);display:grid;place-items:center;font-size:48px;color:#a5c7df}.ym-card-art img{width:100%;height:100%;object-fit:cover}.ym-card>strong{display:block;font-size:14px;margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ym-card>small{display:block;color:#999;margin-top:3px;font-size:12px}.ym-card-play{position:absolute;bottom:10px;right:10px;background:var(--ym-primary);color:#fff;border-radius:50%;width:40px;height:40px;font-size:18px;display:grid;place-items:center;opacity:0;transition:opacity .15s}.ym-card:hover .ym-card-play,.ym-card:focus-visible .ym-card-play{opacity:1}.ym-list-toolbar{display:flex;align-items:center;justify-content:space-between;margin:0 0 16px;color:#999}.ym-track{display:grid;grid-template-columns:28px 44px minmax(0,1fr) 44px 24px;align-items:center;gap:12px;width:100%;min-height:60px;background:transparent;border:0;border-bottom:1px solid #ffffff06;border-radius:5px;padding:6px;text-align:left}.ym-track:hover{background:#ffffff09}.ym-track-number,.ym-track-time{font-size:12px;color:#999}.ym-track-art{width:44px;height:44px;background:#333;border-radius:4px;overflow:hidden;display:grid;place-items:center;color:#888}.ym-track-art img{width:100%;height:100%;object-fit:cover}.ym-track-main{min-width:0}.ym-track-main strong,.ym-track-main small{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ym-track-main small{font-size:12px;color:#999;margin-top:3px}.ym-track-play{color:var(--ym-primary);opacity:0}.ym-track:hover .ym-track-play{opacity:1}
 .ym-dialog{color:#eee;background:#272727;border:1px solid #444;border-radius:14px;padding:22px;width:min(460px,calc(100% - 24px));max-height:85dvh;overflow:auto;overscroll-behavior:contain;box-shadow:0 16px 80px #0008}.ym-dialog::backdrop{background:#0009}.ym-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.ym-dialog>p{font-size:13px;margin:10px 0 16px}.ym-source-option{display:flex;align-items:center;gap:12px;min-height:70px;padding:10px 4px;border-bottom:1px solid #3c3c3c;cursor:pointer}.ym-source-option>span{min-width:0}.ym-source-option strong,.ym-source-option small{display:block}.ym-source-option small{color:#999;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:310px}#ym-input-source-dialog .ym-source-option small{white-space:normal;overflow:visible;text-overflow:clip;max-width:none;line-height:1.4}#ym-input-source-dialog .ym-source-option strong{font-size:14px}.ym-inline-error{color:#ef9a9a}.ym-dialog-buttons{display:flex;flex-direction:column;gap:10px;margin-top:20px}.ym-queue-item{display:flex;align-items:center;gap:12px;background:transparent;border:0;border-bottom:1px solid #333;width:100%;min-height:60px;text-align:left;padding:8px}.ym-queue-item.active{color:#29b6f6}.ym-queue-item small{display:block;color:#999;font-size:12px}
 @media(max-width:1100px){.ym-shell{grid-template-columns:190px minmax(0,1fr)}.ym-player{grid-template-columns:minmax(160px,1fr) auto}.ym-player-actions{grid-column:1;grid-row:2}.ym-volume{grid-column:2;grid-row:2;border:0;padding:0}.ym-volume label{display:none}.ym-volume input{width:110px}.ym-player-area{padding:12px 18px 0}.ym-main{padding:20px}}
@@ -886,6 +964,7 @@ const CSS = `
 #ym-volume::-moz-range-progress{height:8px;background:var(--ym-primary);border-radius:8px}
 #ym-volume::-moz-range-thumb{width:20px;height:20px;background:var(--ym-primary);border:2px solid #202020;border-radius:50%}
 .ym-wave-settings{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px}.ym-wave-settings p{flex-basis:100%;font-size:12px}.ym-wave-settings select{min-height:44px;min-width:140px;max-width:100%;font:inherit;border:1px solid #555;border-radius:8px;background:#292929;color:#eee;padding:8px}
+.ym-track-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:4px;border-bottom:1px solid #ffffff06}.ym-track-row .ym-track{min-width:0;border-bottom:0}.ym-like{color:#aaa;flex:none}.ym-like.active{color:#29b6f6;background:#03a9f415}
 .ym-radio-status{grid-column:1/-1;color:#aaa;font-size:12px;padding:4px 0}
 .ym-wave-actions{grid-column:1/-1;display:flex;align-items:center;gap:8px;border-top:1px solid #ffffff09;padding-top:6px}.ym-wave-actions .ym-action{border:1px solid #3d3d3d;background:#292929;min-height:42px;padding:6px 12px}.ym-wave-actions .ym-action:hover{border-color:var(--ym-primary);background:#03a9f412}
 .ym-wave-station-group{margin:22px 0}.ym-wave-station-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}.ym-wave-station{display:flex;flex-direction:column;align-items:stretch;min-width:0;border:1px solid #3d3d3d;border-radius:9px;background:#292929;text-align:left;padding:0;overflow:hidden;min-height:190px}.ym-wave-station:hover,.ym-wave-station:focus-visible{border-color:var(--ym-primary);background:#03a9f412}.ym-wave-station-art{display:grid;place-items:center;aspect-ratio:1;background:linear-gradient(135deg,#315975,#364053);color:#a5c7df;font-size:42px;overflow:hidden}.ym-wave-station-art img{width:100%;height:100%;object-fit:cover}.ym-wave-station strong{padding:9px 10px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ym-wave-station small{padding:3px 10px 10px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

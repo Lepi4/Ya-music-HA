@@ -329,6 +329,17 @@ class YandexMusicService:
         )
         return [track for track in (normalize_track(row) for row in tracks or []) if track]
 
+    async def liked_track_ids(self) -> list[str]:
+        """Read the full like set without downloading hundreds of track models."""
+        client = await self.client()
+        account = await self.account()
+        likes = await self.hass.async_add_executor_job(
+            lambda: client.users_likes_tracks(user_id=account["uid"])
+        )
+        return list(dict.fromkeys(str(value).split(":", 1)[0]
+                                 for value in (getattr(likes, "tracks_ids", []) or [])
+                                 if str(value).split(":", 1)[0].isdigit()))
+
     async def search(self, text: str, page: int = 0) -> dict[str, Any]:
         client = await self.client()
         result = await self.hass.async_add_executor_job(
@@ -572,12 +583,17 @@ class YandexMusicService:
         return [track for track in (normalize_track(row) for row in rows or []) if track]
 
     async def set_like(self, track_id: str, liked: bool) -> None:
+        import re
+        if not re.fullmatch(r"\d+(?::\d+)?", str(track_id)):
+            raise YandexMusicError("У трека нет корректного идентификатора Яндекс Музыки")
         client = await self.client()
         account = await self.account()
         fn = client.users_likes_tracks_add if liked else client.users_likes_tracks_remove
-        await self.hass.async_add_executor_job(
+        saved = await self.hass.async_add_executor_job(
             lambda: fn(track_id, user_id=account["uid"])
         )
+        if not saved:
+            raise YandexMusicError("Яндекс Музыка не подтвердила изменение «Мне нравится»")
 
     async def direct_url(self, track_id: str, prefer_mp3: bool = False) -> str:
         client = await self.client()

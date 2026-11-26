@@ -73,7 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "_panel_custom": {
                 "name": "yandex-music-chaos-panel",
                 "embed_iframe": False,
-                "module_url": f"{STATIC_PREFIX}/panel.js?v=0.4.1",
+                "module_url": f"{STATIC_PREFIX}/panel.js?v=0.4.2",
             },
             "entry_id": entry.entry_id,
         },

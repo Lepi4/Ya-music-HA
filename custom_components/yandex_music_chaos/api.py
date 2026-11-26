@@ -488,11 +488,20 @@ class LikeView(_BaseView):
     url = f"{API_PREFIX}/like"
     name = f"api:{DOMAIN}:like"
 
+    async def get(self, request: web.Request):
+        try:
+            return _json({"track_ids": await self.service(request).liked_track_ids()})
+        except Exception as err:
+            return self.error(err)
+
     async def post(self, request: web.Request):
         try:
             body = await request.json()
-            await self.service(request).set_like(str(body.get("track_id", "")), bool(body.get("liked", True)))
-            return _json({"ok": True})
+            ident, liked = str(body.get("track_id", "")), body.get("liked", True)
+            if not isinstance(liked, bool):
+                return _json({"error": "liked должен быть true или false"}, 400)
+            await self.service(request).set_like(ident, liked)
+            return _json({"ok": True, "track_id": ident, "liked": liked})
         except Exception as err:
             return self.error(err)
 
