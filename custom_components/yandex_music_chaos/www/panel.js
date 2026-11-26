@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.4.0";
+const PANEL_VERSION = "0.4.1";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -135,6 +135,9 @@ class YandexMusicChaosPanel extends HTMLElement {
 
   startPolling() {
     if (!this._pollTimer) this._pollTimer = setInterval(() => { if (!document.hidden) this.refreshPlayers(); }, 5000);
+    if (!this._progressTimer) this._progressTimer = setInterval(() => {
+      if (!document.hidden && this.activePlayer()?.direct_output) this.updateTimeline();
+    }, 1000);
   }
 
   syncPlayerStates() {
@@ -145,7 +148,8 @@ class YandexMusicChaosPanel extends HTMLElement {
         const a = state.attributes;
         const elapsed = state.state === 'playing' && a.media_position_updated_at ? Math.max(0,(Date.now()-Date.parse(a.media_position_updated_at))/1000) : 0;
         return {...player, state:state.state, volume:a.volume_level, muted:a.is_volume_muted,
-          position:Number(a.media_position || 0)+(Number.isFinite(elapsed) ? elapsed : 0), duration:a.media_duration || player.duration};
+          position:Number(a.media_position || 0)+(Number.isFinite(elapsed) ? elapsed : 0),
+          position_updated_at:new Date().toISOString(), duration:a.media_duration || player.duration};
       }
       if (!state) return {...player, ...this._sourceInfo.get(player.entity_id)};
       const a = state.attributes;
@@ -165,6 +169,8 @@ class YandexMusicChaosPanel extends HTMLElement {
     this._stationPointer = null;
     clearInterval(this._pollTimer);
     this._pollTimer = null;
+    clearInterval(this._progressTimer);
+    this._progressTimer = null;
     clearTimeout(this._noticeTimer);
     this.querySelectorAll("dialog").forEach(dialog => dialog.close());
     window.removeEventListener("resize", this._layoutHandler);
@@ -194,6 +200,7 @@ class YandexMusicChaosPanel extends HTMLElement {
         || stations.find(p => !["unavailable", "unknown"].includes(p.state));
       this.selectStation(initial?.entity_id || "");
       this._initialized = true;
+      this.syncPlayerStates();
       this.setAccount(status.account);
       this.updateNowPlaying();
       this.renderTargets();
@@ -495,12 +502,7 @@ class YandexMusicChaosPanel extends HTMLElement {
     const playing = ["playing", "buffering"].includes(player?.state);
     play.textContent = playing ? "❚❚" : "▶";
     play.setAttribute("aria-label", playing ? "Пауза" : "Воспроизвести");
-    const seek = this.querySelector("#ym-seek");
-    seek.disabled = disabled || !player.duration;
-    seek.max = String(player?.duration || 1);
-    if (this.shadowRoot.activeElement !== seek) seek.value = String(Math.min(Number(player?.position || 0), Number(seek.max)));
-    this.querySelector("#ym-position").textContent = formatTime(seek.value);
-    this.querySelector("#ym-duration").textContent = formatTime(player?.duration);
+    this.updateTimeline();
     this.querySelector("#ym-target-label").textContent = this._targets.map(id => this.stations().find(p => p.entity_id === id)?.name).filter(Boolean).join(", ") || "Выберите колонку";
     this.querySelector('[data-action="sources"]').disabled = disabled;
     const hasTrackId = /^(?:\d+)(?::\d+)?$|\/track\/\d+/.test(String(player?.media_id || ""));
@@ -513,6 +515,19 @@ class YandexMusicChaosPanel extends HTMLElement {
     const sourceButton = this.querySelector('[data-action="input-source"]');
     sourceButton.disabled = disabled || this._inputSourceBusy;
     this.querySelector("#ym-input-source-name").textContent = (this.sourceName(player?.input_source) || (player?.source_list ? "Не выбран" : "Загрузка…")) + (player?.direct_output ? " · напрямую" : "");
+  }
+
+  updateTimeline() {
+    const player = this.activePlayer();
+    const seek = this.querySelector('#ym-seek');
+    if (!seek) return;
+    seek.disabled = !player || ['unavailable','unknown'].includes(player.state) || !player.duration;
+    seek.max = String(player?.duration || 1);
+    const elapsed = player?.direct_output && player.state === 'playing' && player.position_updated_at ? Math.max(0,(Date.now()-Date.parse(player.position_updated_at))/1000) : 0;
+    const position = Number(player?.position || 0) + (Number.isFinite(elapsed) ? elapsed : 0);
+    if (this.shadowRoot.activeElement !== seek) seek.value = String(Math.min(position,Number(seek.max)));
+    this.querySelector('#ym-position').textContent = formatTime(seek.value);
+    this.querySelector('#ym-duration').textContent = formatTime(player?.duration);
   }
 
   sourceName(source) {

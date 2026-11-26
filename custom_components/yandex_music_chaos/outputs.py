@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import time
 from types import SimpleNamespace
 
@@ -228,7 +229,9 @@ class DirectOutputs:
                 "artist": (track or {}).get("artists") or attrs.get("media_artist"),
                 "image": (track or {}).get("cover") or attrs.get("entity_picture"),
                 "media_id": str(track["id"]) if track else "",
-                "position": position(state) if state else None, "duration": attrs.get("media_duration") or (track or {}).get("duration"),
+                "position": position(state) if state else None,
+                "position_updated_at": datetime.now(timezone.utc).isoformat(),
+                "duration": attrs.get("media_duration") or (track or {}).get("duration"),
                 "volume": attrs.get("volume_level"), "muted": attrs.get("is_volume_muted"),
                 "output_error": error}
 

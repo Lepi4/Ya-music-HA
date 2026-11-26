@@ -10,13 +10,13 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.4.0`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.4.1`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
 const players = [
   {entity_id:'media_player.one',name:'Station One',source:true,is_yandex_station:true,state:'idle',volume:0.5},
-  {entity_id:'media_player.two',name:'Station Two',is_yandex_station:true,state:'playing',volume:0.27,title:'Current song',artist:'Artist'},
+  {entity_id:'media_player.two',name:'Station Two',is_yandex_station:true,state:'playing',volume:0.27,title:'Current song',artist:'Artist',media_id:'12345'},
   {entity_id:'media_player.tv',name:'Unselected TV',state:'playing',volume:1,title:'TV show'},
 ];
 const track = {id:'1',title:'Test song',artists:'Artist',duration:180};
@@ -126,7 +126,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.4.0');
+  assert.equal(metrics.version,'0.4.1');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);
@@ -193,6 +193,14 @@ try {
       el.hass={...el.hass,states:{'media_player.two':{state:'paused',attributes:{media_position:180,media_title:'Station already finished'}},'media_player.shield':{state:'playing',attributes:{media_position:173,media_duration:180,volume_level:.21}}}};
     });
     assert.equal(await page.locator('#ym-seek').inputValue(),'173');
+    await page.waitForTimeout(1200);
+    assert.ok(Number(await page.locator('#ym-seek').inputValue())>=174, 'Receiver timeline must progress between HA polls');
+    await page.evaluate(()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      el.hass={...el.hass,states:{'media_player.shield':{state:'paused',attributes:{media_position:175,media_duration:180,volume_level:.21}}}};
+    });
+    await page.waitForTimeout(1100);
+    assert.equal(await page.locator('#ym-seek').inputValue(),'175','Paused receiver timeline must stay still');
     assert.notEqual(await page.locator('#ym-now-title').textContent(),'Station already finished');
     await page.locator('#ym-volume').evaluate(el=>{el.value='.32';el.dispatchEvent(new Event('change',{bubbles:true}));});
     await page.waitForTimeout(80);
