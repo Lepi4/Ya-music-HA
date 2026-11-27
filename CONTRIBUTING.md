@@ -6,6 +6,10 @@ Backend использует библиотеку `yandex-music`, панель �
 
 ## Проверки
 
+Перед unit tests CI устанавливает runtime-зависимости из manifest и отдельно
+запускает `python scripts/check_dependency.py`. Эта проверка использует настоящую
+библиотеку, чтобы ошибки импорта не скрывались подменами модулей в unit tests.
+
 ```sh
 python -m unittest discover -s tests -v
 node --check custom_components/yandex_music_chaos/www/panel.js

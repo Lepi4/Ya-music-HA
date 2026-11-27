@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.4.2";
+const PANEL_VERSION = "0.4.3";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
