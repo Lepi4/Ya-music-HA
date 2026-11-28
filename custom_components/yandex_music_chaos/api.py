@@ -154,7 +154,8 @@ class _BaseView(HomeAssistantView):
     def error(err: Exception) -> web.Response:
         if isinstance(err, YandexMusicError):
             _LOGGER.error("Yandex Music panel request failed: %s", err)
-            return _json({"error": str(err), "code": "yandex_music"}, 502)
+            status = getattr(err, "status_code", 502)
+            return _json({"error": str(err), "code": "output" if status == 409 else "yandex_music"}, status)
         _LOGGER.exception("Yandex Music panel request failed")
         return _json({"error": "Внутренняя ошибка Яндекс Музыки"}, 500)
 

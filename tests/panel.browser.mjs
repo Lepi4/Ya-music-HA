@@ -10,7 +10,7 @@ const live = process.argv.includes('--live');
 const haUrl = process.env.YM_HA_URL || 'http://homeassistant.local:8123';
 const sshTarget = process.env.YM_HA_SSH || 'homeassistant';
 const source = live
-  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.4.3`)).text()
+  ? await (await fetch(`${haUrl}/api/yandex_music_chaos/static/panel.js?v=0.4.4`)).text()
   : await readFile(new URL('../custom_components/yandex_music_chaos/www/panel.js', import.meta.url), 'utf8');
 const calls = [];
 const errors = [];
@@ -121,6 +121,17 @@ try {
   await page.locator('#ym-recommendations .ym-card').first().waitFor({timeout:60000});
   await page.locator('.ym-track').first().waitFor({timeout:60000});
   assert.equal(await page.locator('#ym-error:not(.hidden)').count(),0);
+  if (!live) {
+    const explanation = await page.evaluate(async()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
+      const original=el.hass.callApi;
+      el.hass.callApi=async()=>{throw {message:'Response error: 409',body:{error:'Внешний плеер недоступен'}};};
+      try {await el.api('/outputs'); return null;}
+      catch(error) {return error.message;}
+      finally {el.hass.callApi=original;}
+    });
+    assert.equal(explanation,'Внешний плеер недоступен');
+  }
   assert.ok(await page.locator('.ym-track').count()>0);
   assert.ok(await page.locator('.ym-station').count()>1);
   assert.equal(await page.locator('.ym-sidebar input, .ym-sidebar [data-station]').count(),0);
@@ -135,7 +146,7 @@ try {
   assert.ok(Math.abs(metrics.main.y-metrics.player.bottom)<1);
   assert.ok(metrics.main.bottom>900);
   assert.notEqual(metrics.color,'rgb(0, 0, 0)');
-  assert.equal(metrics.version,'0.4.3');
+  assert.equal(metrics.version,'0.4.4');
   // Wheel events must scroll the actual workspace, including over its sticky player.
   for(const surface of ['.ym-main','.ym-player-area','.ym-sidebar','.ym-card-row']) {
     await page.evaluate(()=>document.querySelector('yandex-music-chaos-panel').querySelector('.ym-workspace').scrollTop=0);

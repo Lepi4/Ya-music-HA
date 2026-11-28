@@ -1,6 +1,6 @@
 // hass.callApi already prefixes /api/.
 const API = "yandex_music_chaos/v1";
-const PANEL_VERSION = "0.4.3";
+const PANEL_VERSION = "0.4.4";
 
 class YandexMusicChaosPanel extends HTMLElement {
   constructor() {
@@ -189,7 +189,17 @@ class YandexMusicChaosPanel extends HTMLElement {
 
   async api(path, options = {}) {
     if (!this.hass?.callApi) throw new Error("Home Assistant ещё не передал API");
-    return this.hass.callApi(options.method || "GET", `${API}${path}`, options.body);
+    try {
+      return await this.hass.callApi(options.method || "GET", `${API}${path}`, options.body);
+    } catch (error) {
+      // HA's HTTPError.message contains only "Response error: <status>".
+      // Our API returns the actionable explanation under body.error.
+      const message = error?.body?.error || error?.body?.message || error?.error || error?.message;
+      const explained = new Error(typeof message === "string" ? message : "Не удалось выполнить запрос");
+      explained.body = error?.body;
+      explained.status_code = error?.status_code;
+      throw explained;
+    }
   }
 
   async loadInitial() {

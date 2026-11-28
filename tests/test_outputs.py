@@ -145,15 +145,21 @@ class DirectOutputTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.helper.calls[0][2]["volume_level"],.43)
         self.assertEqual(self.helper.calls[1][2]["seek_position"],42)
 
-    async def test_rejects_active_station_busy_receiver_and_duplicate_owner(self):
+    async def test_active_station_is_paused_before_direct_source_selection(self):
         self.helper.states["one"] = self.helper.state("1")
-        with self.assertRaisesRegex(RuntimeError,"Сначала"):
-            await self.select()
-        self.helper.states["one"] = self.helper.state("","idle")
+        with patch.dict(sys.modules, {self.dependency.__name__:self.dependency}):
+            await self.outputs.select("one", "External", True)
+        self.assertEqual([c[1] for c in self.helper.calls], ["media_pause", "select_source"])
+        self.assertTrue(all(c[2]["entity_id"] == ["one"] for c in self.helper.calls))
+        self.assertEqual(self.outputs.routes["one"].entity_id, "media_player.receiver")
+
+    async def test_rejects_busy_receiver_before_pausing_station_and_duplicate_owner(self):
+        self.helper.states["one"] = self.helper.state("1")
         self.helper.states["media_player.receiver"] = self.state("999")
         with self.assertRaisesRegex(RuntimeError,"другой контент"):
             await self.select()
         self.assertEqual(self.helper.calls,[])
+        self.helper.states["one"] = self.helper.state("","idle")
         self.helper.states["media_player.receiver"] = self.state("","idle")
         await self.select()
         second=NS(**{**vars(self.station),"entity_id":"two"})
@@ -190,6 +196,28 @@ class DirectOutputTest(unittest.IsolatedAsyncioTestCase):
         await self.outputs.release("one")
         with self.assertRaisesRegex(RuntimeError,"пульт Android TV"):
             await self.outputs.select("one","Remote",True)
+
+    async def test_late_heos_discovery_can_be_selected_without_native_source(self):
+        heos = NS(entity_id="media_player.kholl_4", platform=NS(platform_name="heos"))
+        self.hass.data["entity_components"]["media_player"].entities.append(heos)
+        self.helper.states[heos.entity_id] = self.state("", "paused")
+        self.assertIn({"source": heos.entity_id, "entity_id": heos.entity_id}, self.outputs.choices("one"))
+        with patch.dict(sys.modules, {self.dependency.__name__:self.dependency}):
+            await self.outputs.select("one", heos.entity_id, True)
+        await self.outputs.playlist("one", self.tracks, 0)
+        self.assertEqual(self.helper.calls[-1][2]["entity_id"], [heos.entity_id])
+        self.assertEqual(self.helper.calls[-1][2]["media_content_id"], "https://cdn.example/1.mp3")
+
+    async def test_failed_station_pause_keeps_route_unchanged(self):
+        await self.select()
+        heos = NS(entity_id="media_player.kholl_4", platform=NS(platform_name="heos"))
+        self.hass.data["entity_components"]["media_player"].entities.append(heos)
+        self.helper.states[heos.entity_id] = self.state("", "idle")
+        self.helper.states["one"] = self.helper.state("1")
+        self.helper.fail_play = True
+        with self.assertRaisesRegex(RuntimeError, "offline"):
+            await self.outputs.select("one", heos.entity_id, True)
+        self.assertEqual(self.outputs.routes["one"].entity_id, "media_player.receiver")
 
     async def test_removed_direct_route_never_falls_back_to_audible_station(self):
         await self.select()

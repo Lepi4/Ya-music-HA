@@ -11,6 +11,12 @@ from .radio import position
 from .yandex import YandexMusicError
 
 
+class OutputRequestError(YandexMusicError):
+    """An unavailable or conflicting output, rather than a Yandex outage."""
+
+    status_code = 409
+
+
 @dataclass
 class Output:
     station: str
@@ -46,7 +52,7 @@ class DirectOutputs:
         component = self.hass.data.get("entity_components", {}).get("media_player")
         entity = next((e for e in getattr(component, "entities", []) if e.entity_id == entity_id), None)
         if entity is None or not isinstance(getattr(entity, "sync_sources", None), dict):
-            raise YandexMusicError("Эта Станция не предоставляет внешние источники YandexStation")
+            raise OutputRequestError("Эта Станция не предоставляет внешние источники YandexStation")
         return entity
 
     def choices(self, station):
@@ -56,10 +62,10 @@ class DirectOutputs:
         choices = {name: {"source": name, "entity_id": item["entity_id"]}
                    for name, item in entity.sync_sources.items() if item.get("entity_id")}
         # Native source lists are captured by YandexStation once at startup.
-        # Cast/DLNA entities may arrive later; expose them for direct playback.
+        # Receivers may arrive later; expose them for direct playback.
         for ident, receiver in entities.items():
             platform = getattr(getattr(receiver, "platform", None), "platform_name", "")
-            if platform in ("cast", "dlna_dmr") and ident not in {c["entity_id"] for c in choices.values()}:
+            if platform in ("cast", "dlna_dmr", "heos") and ident not in {c["entity_id"] for c in choices.values()}:
                 choices[ident] = {"source": ident, "entity_id": ident}
         return [choice for choice in choices.values()
                 if getattr(getattr(entities.get(choice["entity_id"]), "platform", None), "platform_name", "") != "androidtv_remote"]
@@ -76,23 +82,27 @@ class DirectOutputs:
             sources = getattr(entity, "source_list", None) or []
             receivers = {choice["source"]: choice["entity_id"] for choice in self.choices(station)}
             if source not in sources and not (direct and source in receivers):
-                raise YandexMusicError("Источник отсутствует в списке выбранной Станции")
+                raise OutputRequestError("Источник отсутствует в списке выбранной Станции")
             current = self.routes.get(station)
             if direct and source in receivers:
                 receiver = receivers[source]
                 state = self.hass.states.get(receiver)
                 if not state or state.state in ("unknown", "unavailable"):
-                    raise YandexMusicError("Внешний плеер недоступен")
+                    raise OutputRequestError("Внешний плеер недоступен")
                 if receiver == station or any(r.entity_id == receiver and s != station for s, r in self.routes.items()):
-                    raise YandexMusicError("Этот внешний плеер уже выбран у другой Станции")
+                    raise OutputRequestError("Этот внешний плеер уже выбран у другой Станции")
                 if current and current.entity_id == receiver:
                     self.verify(current)
                     return
                 station_state = self.hass.states.get(station)
-                if station_state and station_state.state in ("playing", "buffering"):
-                    raise YandexMusicError("Сначала остановите воспроизведение Станции, затем выберите прямой внешний source")
                 if state.state in ("playing", "buffering") and not (current and self.matches(current, state)):
-                    raise YandexMusicError("На внешнем плеере уже играет другой контент. Сначала остановите его")
+                    raise OutputRequestError("На внешнем плеере уже играет другой контент. Сначала остановите его")
+                # Selecting an output is an explicit request to leave the
+                # Station. Validate the receiver first, then pause through the
+                # public service before disabling native mirroring. The output
+                # owns its next track and clock; no Station timer drives it.
+                if station_state and station_state.state in ("playing", "buffering"):
+                    await self.call("media_pause", station)
                 await self.release(station, stop=True)
                 await self.service.radio.control(station, "detach")
                 # Public source service disables YandexStation's native mirroring.
@@ -100,11 +110,11 @@ class DirectOutputs:
                 from custom_components.yandex_station.core.yandex_station import SOURCE_STATION
                 await self.call("select_source", station, source=SOURCE_STATION)
                 if entity.sync_enabled:
-                    raise YandexMusicError("YandexStation не отключила синхронизацию; прямой запуск отменён")
+                    raise OutputRequestError("YandexStation не отключила синхронизацию; прямой запуск отменён")
                 self.routes[station] = Output(station, source, receiver)
             else:
                 if direct and source in entity.sync_sources:
-                    raise YandexMusicError("Выберите медиаполучатель Cast/DLNA, а не пульт Android TV")
+                    raise OutputRequestError("Выберите медиаполучатель Cast/DLNA/HEOS, а не пульт Android TV")
                 await self.release(station, stop=True)
                 await self.call("select_source", station, source=source)
 

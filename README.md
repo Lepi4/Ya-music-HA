@@ -76,7 +76,7 @@ HACS устанавливает релизы из GitHub. GitVerse содерж�
 
 ```sh
 curl -fL https://raw.githubusercontent.com/Lepi4/Ya-music-HA/main/scripts/install.py -o /tmp/install-ym.py
-python3 /tmp/install-ym.py --config /config --version v0.4.3
+python3 /tmp/install-ym.py --config /config --version v0.4.4
 ha core restart
 ```
 
@@ -90,12 +90,12 @@ ha core restart
 
 ```sh
 YM_SRC=$(mktemp -d)
-git clone --depth 1 --branch v0.4.3 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
-python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.4.3/yandex_music_chaos.zip"
+git clone --depth 1 --branch v0.4.4 https://gitverse.ru/Lepi4/Ya-music-HA.git "$YM_SRC"
+python3 "$YM_SRC/scripts/install.py" --config /config --archive-url "file://$YM_SRC/release/0.4.4/yandex_music_chaos.zip"
 ha core restart
 ```
 
-Архив и контрольная сумма находятся в [`release/0.4.3/`](release/0.4.3/).
+Архив и контрольная сумма находятся в [`release/0.4.4/`](release/0.4.4/).
 При ручной установке скопируйте `custom_components/yandex_music_chaos` в
 `config/custom_components/`, перезапустите HA и добавьте интеграцию через настройки.
 
