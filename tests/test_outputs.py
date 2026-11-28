@@ -205,6 +205,7 @@ class DirectOutputTest(unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules, {self.dependency.__name__:self.dependency}):
             await self.outputs.select("one", heos.entity_id, True)
         await self.outputs.playlist("one", self.tracks, 0)
+        self.assertEqual(self.helper.calls[-2][1], "clear_playlist")
         self.assertEqual(self.helper.calls[-1][2]["entity_id"], [heos.entity_id])
         self.assertEqual(self.helper.calls[-1][2]["media_content_id"], "https://cdn.example/1.mp3")
 
@@ -243,6 +244,9 @@ class DirectOutputTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(route.index,0)
         verified=self.state(pos=60)
         await self.outputs.poll_heos()
+        verified=NS(state="playing",attributes={"media_content_id":""})
+        await self.outputs.poll_heos()
+        self.assertEqual(route.transport_state.attributes["media_position"],60)
         verified=self.state(status="idle",pos=60)
         await self.outputs.poll_heos()
         self.assertEqual(route.index,1)
@@ -283,6 +287,9 @@ class DirectOutputTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.attributes["media_content_id"],"https://cdn.example/1.mp3")
         self.assertEqual(state.attributes["media_position"],62)
         self.assertEqual(state.attributes["media_duration"],184)
+        await self.outputs.playlist("one",self.tracks,0)
+        self.assertEqual(self.helper.calls[-2][1],"clear_playlist")
+        self.assertEqual(self.helper.calls[-2][2]["entity_id"],[leader.entity_id])
 
     async def test_removed_direct_route_never_falls_back_to_audible_station(self):
         await self.select()

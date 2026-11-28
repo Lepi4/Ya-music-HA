@@ -57,6 +57,12 @@ class DirectOutputs:
         entity = self.receiver_entity(entity_id)
         return getattr(getattr(entity, "platform", None), "platform_name", "") == "heos"
 
+    def heos_leader(self, entity_id):
+        state = self.hass.states.get(entity_id)
+        members = state.attributes.get("group_members") if state else None
+        leader = members[0] if members else entity_id
+        return leader if self.is_heos(leader) else entity_id
+
     async def heos_state(self, route):
         """HEOS reports queue slot IDs, not URLs; verify the leader's real URI."""
         from aiohttp import ClientTimeout
@@ -65,8 +71,7 @@ class DirectOutputs:
         state = self.hass.states.get(route.entity_id)
         if not state or state.state in ("unknown", "unavailable"):
             return state
-        members = state.attributes.get("group_members") or [route.entity_id]
-        leader = self.receiver_entity(members[0])
+        leader = self.receiver_entity(self.heos_leader(route.entity_id))
         # HA's HEOS entity wraps a pyheos player. Read its discovered address;
         # do not store addresses or create a second HEOS control connection.
         address = ip_address(str(getattr(getattr(leader, "_player", None), "ip_address", "")))
@@ -114,6 +119,11 @@ class DirectOutputs:
                     route.transport_state = None
                     continue
                 if self._closed or self.routes.get(route.station) is not route or route.url != url:
+                    continue
+                if (state and state.state in ("playing", "buffering") and route.observed
+                        and not state.attributes.get("media_content_id")):
+                    # HEOS briefly empties its URI before reporting idle at EOF.
+                    # Keep the last verified position to recognize that EOF.
                     continue
                 old, route.transport_state = route.transport_state, state
                 await self.handle_event(SimpleNamespace(data={"entity_id": route.entity_id,
@@ -228,6 +238,11 @@ class DirectOutputs:
         route.transport_state = None
         route.started_at = time.monotonic()
         try:
+            if self.is_heos(route.entity_id):
+                # HEOS play_url keeps its old queue and can jump into stale
+                # streams at EOF. This integration owns the selected playlist;
+                # replace the receiver queue before sending each resolved URL.
+                await self.call("clear_playlist", self.heos_leader(route.entity_id))
             await self.call("play_media", route.entity_id, media_content_id=url, media_content_type="music",
                             extra={"title": track.get("title", ""), "thumb": track.get("cover", ""),
                                    "metadata": {"metadataType": 3, "title": track.get("title", ""),
