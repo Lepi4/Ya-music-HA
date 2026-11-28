@@ -269,6 +269,14 @@ try {
     assert.ok(Number(await page.locator('#ym-seek').inputValue())>=174, 'Receiver timeline must progress between HA polls');
     await page.evaluate(()=>{
       const el=document.querySelector('yandex-music-chaos-panel');
+      const player=el._players.find(p=>p.entity_id==='media_player.two');
+      Object.assign(player,{transport_polling:true,position:100,position_updated_at:new Date().toISOString()});
+      el.hass={...el.hass,states:{'media_player.shield':{state:'playing',attributes:{media_position:2,media_duration:180,volume_level:.21}}}};
+    });
+    assert.ok(Number(await page.locator('#ym-seek').inputValue())>=100,'HEOS transport progress must survive stale HA slot progress');
+    await page.evaluate(()=>{document.querySelector('yandex-music-chaos-panel')._players.find(p=>p.entity_id==='media_player.two').transport_polling=false;});
+    await page.evaluate(()=>{
+      const el=document.querySelector('yandex-music-chaos-panel');
       el.hass={...el.hass,states:{'media_player.shield':{state:'paused',attributes:{media_position:175,media_duration:180,volume_level:.21}}}};
     });
     await page.waitForTimeout(1100);

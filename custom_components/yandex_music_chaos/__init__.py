@@ -45,6 +45,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(hass.bus.async_listen(EVENT_STATE_CHANGED, service.radio.handle_event))
     entry.async_on_unload(hass.bus.async_listen(EVENT_STATE_CHANGED, service.outputs.handle_event))
     entry.async_on_unload(async_track_time_interval(hass, service.radio.retry_waiting, timedelta(seconds=10)))
+    entry.async_on_unload(async_track_time_interval(hass, service.outputs.poll_heos, timedelta(seconds=2)))
     entry.async_on_unload(service.radio.close)
     entry.async_on_unload(service.outputs.close)
     hass.data[DOMAIN] = service

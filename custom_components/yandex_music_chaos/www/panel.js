@@ -154,6 +154,7 @@ class YandexMusicChaosPanel extends HTMLElement {
       if (player.direct_output) {
         if (!state) return player;
         const a = state.attributes;
+        if (player.transport_polling) return {...player, volume:a.volume_level, muted:a.is_volume_muted};
         const elapsed = state.state === 'playing' && a.media_position_updated_at ? Math.max(0,(Date.now()-Date.parse(a.media_position_updated_at))/1000) : 0;
         return {...player, state:state.state, volume:a.volume_level, muted:a.is_volume_muted,
           position:Number(a.media_position || 0)+(Number.isFinite(elapsed) ? elapsed : 0),

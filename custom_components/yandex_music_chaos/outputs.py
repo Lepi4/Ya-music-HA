@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from ipaddress import ip_address
 import time
 from types import SimpleNamespace
+from xml.etree import ElementTree
 
 from .radio import position
 from .yandex import YandexMusicError
@@ -31,6 +33,7 @@ class Output:
     active: bool = False
     closing: bool = False
     error: str | None = None
+    transport_state: object | None = None
 
     @property
     def current(self):
@@ -44,6 +47,79 @@ class DirectOutputs:
         self.routes: dict[str, Output] = {}
         self._locks = {}
         self._closed = False
+        self._polling_heos = False
+
+    def receiver_entity(self, entity_id):
+        component = self.hass.data.get("entity_components", {}).get("media_player")
+        return next((e for e in getattr(component, "entities", []) if e.entity_id == entity_id), None)
+
+    def is_heos(self, entity_id):
+        entity = self.receiver_entity(entity_id)
+        return getattr(getattr(entity, "platform", None), "platform_name", "") == "heos"
+
+    async def heos_state(self, route):
+        """HEOS reports queue slot IDs, not URLs; verify the leader's real URI."""
+        from aiohttp import ClientTimeout
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+        state = self.hass.states.get(route.entity_id)
+        if not state or state.state in ("unknown", "unavailable"):
+            return state
+        members = state.attributes.get("group_members") or [route.entity_id]
+        leader = self.receiver_entity(members[0])
+        # HA's HEOS entity wraps a pyheos player. Read its discovered address;
+        # do not store addresses or create a second HEOS control connection.
+        address = ip_address(str(getattr(getattr(leader, "_player", None), "ip_address", "")))
+        host = f"[{address}]" if address.version == 6 else str(address)
+        service = "urn:schemas-upnp-org:service:AVTransport:1"
+        body = ('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+                '<s:Body><u:GetPositionInfo xmlns:u="' + service + '">'
+                '<InstanceID>0</InstanceID></u:GetPositionInfo></s:Body></s:Envelope>')
+        session = async_get_clientsession(self.hass)
+        async with session.post(
+            f"http://{host}:60006/upnp/control/renderer_dvc/AVTransport",
+            data=body, headers={"Content-Type": "text/xml; charset=utf-8",
+                               "SOAPAction": f'"{service}#GetPositionInfo"'},
+            timeout=ClientTimeout(total=2),
+        ) as response:
+            response.raise_for_status()
+            document = ElementTree.fromstring(await response.read())
+        values = {node.tag.rsplit("}", 1)[-1]: node.text for node in document.iter()}
+
+        def seconds(text):
+            try:
+                h, m, s = map(float, (text or "").split(":"))
+                return h * 3600 + m * 60 + s
+            except ValueError:
+                return None
+
+        attrs = {**state.attributes, "media_content_id": values.get("TrackURI") or "",
+                 "media_position": seconds(values.get("RelTime")),
+                 "media_duration": seconds(values.get("TrackDuration")),
+                 "media_position_updated_at": datetime.now(timezone.utc)}
+        return SimpleNamespace(state=state.state, attributes=attrs)
+
+    async def poll_heos(self, _now=None):
+        if self._closed or self._polling_heos:
+            return
+        self._polling_heos = True
+        try:
+            for route in list(self.routes.values()):
+                if route.closing or not self.is_heos(route.entity_id):
+                    continue
+                url = route.url
+                try:
+                    state = await self.heos_state(route)
+                except Exception:
+                    route.transport_state = None
+                    continue
+                if self._closed or self.routes.get(route.station) is not route or route.url != url:
+                    continue
+                old, route.transport_state = route.transport_state, state
+                await self.handle_event(SimpleNamespace(data={"entity_id": route.entity_id,
+                    "old_state": old, "new_state": state, "verified_transport": True}))
+        finally:
+            self._polling_heos = False
 
     def lock(self, station):
         return self._locks.setdefault(station, asyncio.Lock())
@@ -74,6 +150,8 @@ class DirectOutputs:
         await self.hass.services.async_call("media_player", action, {"entity_id": [target], **data}, blocking=True)
 
     def matches(self, route, state):
+        if self.is_heos(route.entity_id) and state is self.hass.states.get(route.entity_id):
+            state = route.transport_state
         return bool(state and route.url and str(state.attributes.get("media_content_id") or "") == route.url)
 
     async def select(self, station, source, direct):
@@ -144,9 +222,10 @@ class DirectOutputs:
         track = tracks[index]
         url = await self.service.direct_url(str(track["id"]), prefer_mp3=True)
         self.verify(route)
-        previous = (route.tracks, route.index, route.radio, route.url, route.observed, route.active)
+        previous = (route.tracks, route.index, route.radio, route.url, route.observed, route.active, route.transport_state)
         route.tracks, route.index, route.radio, route.url = tracks, index, radio, url
         route.observed, route.active, route.error = False, True, None
+        route.transport_state = None
         route.started_at = time.monotonic()
         try:
             await self.call("play_media", route.entity_id, media_content_id=url, media_content_type="music",
@@ -154,7 +233,7 @@ class DirectOutputs:
                                    "metadata": {"metadataType": 3, "title": track.get("title", ""),
                                                 "artist": track.get("artists", "")}})
         except Exception:
-            route.tracks, route.index, route.radio, route.url, route.observed, route.active = previous
+            route.tracks, route.index, route.radio, route.url, route.observed, route.active, route.transport_state = previous
             route.error = "Не удалось отправить трек внешнему плееру"
             raise
 
@@ -226,13 +305,16 @@ class DirectOutputs:
         if not route:
             return row
         state = self.hass.states.get(route.entity_id)
-        attrs = state.attributes if state else {}
         owned = self.matches(route, state)
+        if owned and self.is_heos(route.entity_id):
+            state = route.transport_state
+        attrs = state.attributes if state else {}
         track = route.current if owned else None
         error = route.error
         if route.active and not route.observed and time.monotonic() - route.started_at > 30:
             error = error or "Получатель не подтвердил поток. Проверьте поддержку воспроизведения и состояние устройства"
         return {**row, "state": state.state if state else "unavailable", "direct_output": True,
+                "transport_polling": self.is_heos(route.entity_id),
                 "output_entity": route.entity_id, "input_source": route.source,
                 "source_list": list(dict.fromkeys([*getattr(self.station_entity(station), "source_list", []), route.source])),
                 "title": (track or {}).get("title") or attrs.get("media_title"),
@@ -248,6 +330,8 @@ class DirectOutputs:
     async def handle_event(self, event):
         for station, route in list(self.routes.items()):
             if event.data.get("entity_id") != route.entity_id or not route.active:
+                continue
+            if self.is_heos(route.entity_id) and not event.data.get("verified_transport"):
                 continue
             # Receiver events only. The Station may finish minutes earlier or
             # later; its progress/paused state has no authority here.

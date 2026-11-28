@@ -219,6 +219,71 @@ class DirectOutputTest(unittest.IsolatedAsyncioTestCase):
             await self.outputs.select("one", heos.entity_id, True)
         self.assertEqual(self.outputs.routes["one"].entity_id, "media_player.receiver")
 
+    async def test_heos_queue_slot_is_not_stream_identity_and_eof_uses_transport(self):
+        receiver=NS(entity_id="media_player.receiver",platform=NS(platform_name="heos"))
+        self.hass.data["entity_components"]["media_player"].entities.append(receiver)
+        await self.select()
+        await self.outputs.playlist("one",self.tracks,0)
+        raw=NS(state="playing",attributes={"media_content_id":"1","media_title":"Url Stream"})
+        self.helper.states[receiver.entity_id]=raw
+        route=self.outputs.routes["one"]
+        self.assertFalse(self.outputs.matches(route,raw))
+        verified=self.state(pos=58)
+        async def transport(_route):return verified
+        self.outputs.heos_state=transport
+        await self.outputs.poll_heos()
+        projected=self.outputs.project("one",{})
+        self.assertEqual(projected["media_id"],"1")
+        self.assertEqual(projected["title"],"Track 1")
+        self.assertEqual(projected["position"],58)
+        self.assertTrue(projected["transport_polling"])
+        self.assertTrue(route.observed)
+        # A raw HEOS event with the same slot ID must not end our track.
+        await self.event(raw,NS(state="idle",attributes={"media_content_id":"1"}))
+        self.assertEqual(route.index,0)
+        verified=self.state(pos=60)
+        await self.outputs.poll_heos()
+        verified=self.state(status="idle",pos=60)
+        await self.outputs.poll_heos()
+        self.assertEqual(route.index,1)
+        self.assertEqual(self.helper.calls[-1][2]["media_content_id"],"https://cdn.example/2.mp3")
+        # A different URL in slot 1 is unrelated content, not our next song.
+        verified=self.state("2",pos=3)
+        await self.outputs.poll_heos()
+        verified=self.state("999",pos=4)
+        await self.outputs.poll_heos()
+        self.assertFalse(route.active)
+        self.assertEqual(self.outputs.project("one",{})["media_id"],"")
+
+    async def test_heos_reads_group_leader_uri_and_position(self):
+        receiver=NS(entity_id="media_player.receiver",platform=NS(platform_name="heos"))
+        leader=NS(entity_id="media_player.leader",platform=NS(platform_name="heos"),
+                  _player=NS(ip_address="192.0.2.2"))
+        self.hass.data["entity_components"]["media_player"].entities.extend([receiver,leader])
+        await self.select()
+        self.helper.states[receiver.entity_id]=NS(state="playing",attributes={
+            "media_content_id":"1","group_members":[leader.entity_id,receiver.entity_id]})
+        calls=[]
+        class Response:
+            async def __aenter__(self):return self
+            async def __aexit__(self,*args):return False
+            def raise_for_status(self):pass
+            async def read(self):
+                return b'<root><TrackURI>https://cdn.example/1.mp3</TrackURI><RelTime>00:01:02</RelTime><TrackDuration>00:03:04</TrackDuration></root>'
+        class Session:
+            def post(self,url,**kwargs):calls.append((url,kwargs));return Response()
+        client=ModuleType("homeassistant.helpers.aiohttp_client")
+        client.async_get_clientsession=lambda hass:Session()
+        aiohttp=ModuleType("aiohttp")
+        aiohttp.ClientTimeout=lambda **kwargs:kwargs
+        with patch.dict(sys.modules,{client.__name__:client,"aiohttp":aiohttp}):
+            state=await self.outputs.heos_state(self.outputs.routes["one"])
+        self.assertIn("192.0.2.2:60006",calls[0][0])
+        self.assertIn("GetPositionInfo",calls[0][1]["data"])
+        self.assertEqual(state.attributes["media_content_id"],"https://cdn.example/1.mp3")
+        self.assertEqual(state.attributes["media_position"],62)
+        self.assertEqual(state.attributes["media_duration"],184)
+
     async def test_removed_direct_route_never_falls_back_to_audible_station(self):
         await self.select()
         await self.radio.start("one","user:onyourwave")
