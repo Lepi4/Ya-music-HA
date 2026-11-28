@@ -269,13 +269,18 @@ class DirectOutputTest(unittest.IsolatedAsyncioTestCase):
             "media_content_id":"1","group_members":[leader.entity_id,receiver.entity_id]})
         calls=[]
         class Response:
+            def __init__(self,body):self.body=body
             async def __aenter__(self):return self
             async def __aexit__(self,*args):return False
             def raise_for_status(self):pass
             async def read(self):
-                return b'<root><TrackURI>https://cdn.example/1.mp3</TrackURI><RelTime>00:01:02</RelTime><TrackDuration>00:03:04</TrackDuration></root>'
+                return self.body
         class Session:
-            def post(self,url,**kwargs):calls.append((url,kwargs));return Response()
+            def post(self,url,**kwargs):
+                calls.append((url,kwargs))
+                if 'GetTransportInfo' in kwargs['data']:
+                    return Response(b'<root><CurrentTransportState>STOPPED</CurrentTransportState></root>')
+                return Response(b'<root><TrackURI>https://cdn.example/1.mp3</TrackURI><RelTime>00:01:02</RelTime><TrackDuration>00:03:04</TrackDuration></root>')
         client=ModuleType("homeassistant.helpers.aiohttp_client")
         client.async_get_clientsession=lambda hass:Session()
         aiohttp=ModuleType("aiohttp")
@@ -287,6 +292,7 @@ class DirectOutputTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.attributes["media_content_id"],"https://cdn.example/1.mp3")
         self.assertEqual(state.attributes["media_position"],62)
         self.assertEqual(state.attributes["media_duration"],184)
+        self.assertEqual(state.state,"idle", "The leader's STOPPED overrides the member's stale playing state")
         await self.outputs.playlist("one",self.tracks,0)
         self.assertEqual(self.helper.calls[-2][1],"clear_playlist")
         self.assertEqual(self.helper.calls[-2][2]["entity_id"],[leader.entity_id])

@@ -77,19 +77,23 @@ class DirectOutputs:
         address = ip_address(str(getattr(getattr(leader, "_player", None), "ip_address", "")))
         host = f"[{address}]" if address.version == 6 else str(address)
         service = "urn:schemas-upnp-org:service:AVTransport:1"
-        body = ('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
-                '<s:Body><u:GetPositionInfo xmlns:u="' + service + '">'
-                '<InstanceID>0</InstanceID></u:GetPositionInfo></s:Body></s:Envelope>')
         session = async_get_clientsession(self.hass)
-        async with session.post(
-            f"http://{host}:60006/upnp/control/renderer_dvc/AVTransport",
-            data=body, headers={"Content-Type": "text/xml; charset=utf-8",
-                               "SOAPAction": f'"{service}#GetPositionInfo"'},
-            timeout=ClientTimeout(total=2),
-        ) as response:
-            response.raise_for_status()
-            document = ElementTree.fromstring(await response.read())
-        values = {node.tag.rsplit("}", 1)[-1]: node.text for node in document.iter()}
+
+        async def read(action):
+            body = ('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+                    '<s:Body><u:' + action + ' xmlns:u="' + service + '">'
+                    '<InstanceID>0</InstanceID></u:' + action + '></s:Body></s:Envelope>')
+            async with session.post(
+                f"http://{host}:60006/upnp/control/renderer_dvc/AVTransport",
+                data=body, headers={"Content-Type": "text/xml; charset=utf-8",
+                                   "SOAPAction": f'"{service}#{action}"'},
+                timeout=ClientTimeout(total=2),
+            ) as response:
+                response.raise_for_status()
+                document = ElementTree.fromstring(await response.read())
+            return {node.tag.rsplit("}", 1)[-1]: node.text for node in document.iter()}
+
+        values, transport = await asyncio.gather(read("GetPositionInfo"), read("GetTransportInfo"))
 
         def seconds(text):
             try:
@@ -102,7 +106,10 @@ class DirectOutputs:
                  "media_position": seconds(values.get("RelTime")),
                  "media_duration": seconds(values.get("TrackDuration")),
                  "media_position_updated_at": datetime.now(timezone.utc)}
-        return SimpleNamespace(state=state.state, attributes=attrs)
+        actual_state = {"PLAYING": "playing", "PAUSED_PLAYBACK": "paused",
+                        "STOPPED": "idle", "NO_MEDIA_PRESENT": "idle",
+                        "TRANSITIONING": "buffering"}.get(transport.get("CurrentTransportState"), state.state)
+        return SimpleNamespace(state=actual_state, attributes=attrs)
 
     async def poll_heos(self, _now=None):
         if self._closed or self._polling_heos:
@@ -324,21 +331,22 @@ class DirectOutputs:
         if owned and self.is_heos(route.entity_id):
             state = route.transport_state
         attrs = state.attributes if state else {}
-        track = route.current if owned else None
+        pending = route.active and not route.observed and time.monotonic() - route.started_at <= 30
+        track = route.current if owned or pending else None
         error = route.error
         if route.active and not route.observed and time.monotonic() - route.started_at > 30:
             error = error or "Получатель не подтвердил поток. Проверьте поддержку воспроизведения и состояние устройства"
-        return {**row, "state": state.state if state else "unavailable", "direct_output": True,
+        return {**row, "state": "buffering" if pending and not owned else state.state if state else "unavailable", "direct_output": True,
                 "transport_polling": self.is_heos(route.entity_id),
                 "output_entity": route.entity_id, "input_source": route.source,
                 "source_list": list(dict.fromkeys([*getattr(self.station_entity(station), "source_list", []), route.source])),
                 "title": (track or {}).get("title") or attrs.get("media_title"),
                 "artist": (track or {}).get("artists") or attrs.get("media_artist"),
                 "image": (track or {}).get("cover") or attrs.get("entity_picture"),
-                "media_id": str(track["id"]) if track else "",
-                "position": position(state) if state else None,
+                "media_id": str(track["id"]) if track and owned else "",
+                "position": 0 if pending and not owned else position(state) if state else None,
                 "position_updated_at": datetime.now(timezone.utc).isoformat(),
-                "duration": attrs.get("media_duration") or (track or {}).get("duration"),
+                "duration": (track or {}).get("duration") if pending and not owned else attrs.get("media_duration") or (track or {}).get("duration"),
                 "volume": attrs.get("volume_level"), "muted": attrs.get("is_volume_muted"),
                 "output_error": error}
 
